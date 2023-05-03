@@ -1,3 +1,4 @@
+# libraries
 import pandas as pd, numpy as np, matplotlib.pyplot as plt, seaborn as sns
 import matplotlib.gridspec as gridspec
 import matplotlib as mpl
@@ -21,6 +22,7 @@ from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import roc_curve, classification_report
+import FinancialMultiProcessing as fmp
 
 from numba import jit
 
@@ -196,8 +198,7 @@ def returns(s):
     return (pd.Series(arr, index=s.index[1:]))
 
 
-def get_test_stats(bar_types, bar_returns, test_func,
-                   *args, **kwds):
+def get_test_stats(bar_types, bar_returns, test_func, *args, **kwds):
     dct = {bar: (int(bar_ret.shape[0]), test_func(bar_ret, *args, **kwds))
            for bar, bar_ret in zip(bar_types, bar_returns)}
     df = (pd.DataFrame.from_dict(dct)
@@ -287,6 +288,127 @@ def tick_imbalance_bar(tick, initial_expected_bar_size=150,
     return bars
 
 
+def tick_runs_bar(tick, initial_expected_bar_size,
+                  initial_buy_prob, lambda_bar_size=.1,
+                  lambda_buy_prob=.1):
+    tick = tick.sort_index(ascending=True)
+    tick = tick.reset_index()
+
+    _signed_tick = signed_tick(tick)
+    imbalance_tick_buy = _signed_tick.apply(lambda v: v if v > 0 else 0).cumsum()
+    imbalance_tick_sell = _signed_tick.apply(lambda v: -v if v < 0 else 0).cumsum()
+
+    group = []
+
+    expected_bar_size = initial_expected_bar_size
+    buy_prob = initial_buy_prob
+    expected_runs = expected_bar_size * max(buy_prob, 1 - buy_prob)
+
+    current_group = 1
+    previous_i = 0
+    for i in range(len(tick)):
+        group.append(current_group)
+
+        if max(imbalance_tick_buy[i], imbalance_tick_sell[i]) >= expected_runs:
+            expected_bar_size = (
+                    lambda_bar_size * (i - previous_i + 1) +
+                    (1 - lambda_bar_size) * expected_bar_size
+            )
+
+            buy_prob = (
+                    lambda_buy_prob * imbalance_tick_buy[i] / (i - previous_i + 1) +
+                    (1 - lambda_buy_prob) * buy_prob
+            )
+
+            previous_i = i
+            imbalance_tick_buy -= imbalance_tick_buy[i]
+            imbalance_tick_sell -= imbalance_tick_sell[i]
+            current_group += 1
+
+    tick['group'] = group
+    groupby = tick.groupby('group')
+
+    bars = groupby['price'].ohlc()
+    bars[['volume', 'value']] = groupby[['volume', 'value']].sum()
+    bars['t'] = groupby['t'].first()
+
+    bars.set_index('t', inplace=True)
+
+    return bars
+
+
+def volume_runs_bar(
+        tick,
+        initial_expected_bar_size,
+        initial_buy_prob,
+        initial_buy_volume,
+        initial_sell_volume,
+        lambda_bar_size=.1,
+        lambda_buy_prob=.1,
+        lambda_buy_volume=.1,
+        lambda_sell_volume=.1
+):
+    tick = tick.sort_index(ascending=True)
+    tick = tick.reset_index()
+
+    _signed_tick = signed_tick(tick)
+    _signed_volume = _signed_tick * tick['volume']
+    imbalance_tick_buy = _signed_tick.apply(lambda v: v if v > 0 else 0).cumsum()
+    imbalance_volume_buy = _signed_volume.apply(lambda v: v if v > 0 else 0).cumsum()
+    imbalance_volume_sell = _signed_volume.apply(lambda v: v if -v < 0 else 0).cumsum()
+
+    group = []
+
+    expected_bar_size = initial_expected_bar_size
+    buy_prob = initial_buy_prob
+    buy_volume = initial_buy_volume
+    sell_volume = initial_sell_volume
+    expected_runs = expected_bar_size * max(buy_prob * buy_volume, (1 - buy_prob) * sell_volume)
+
+    current_group = 1
+    previous_i = 0
+    for i in range(len(tick)):
+        group.append(current_group)
+
+        if max(imbalance_volume_buy[i], imbalance_volume_sell[i]) >= expected_runs:
+            expected_bar_size = (
+                    lambda_bar_size * (i - previous_i + 1) +
+                    (1 - lambda_bar_size) * expected_bar_size
+            )
+
+            buy_prob = (
+                    lambda_buy_prob * imbalance_tick_buy[i] / (i - previous_i + 1) +
+                    (1 - lambda_buy_prob) * buy_prob
+            )
+
+            buy_volume = (
+                    lambda_buy_volume * imbalance_volume_buy[i] +
+                    (1 - lambda_buy_volume) * buy_volume
+            )
+
+            sell_volume = (
+                    lambda_sell_volume * imbalance_volume_sell[i] +
+                    (1 - lambda_sell_volume) * sell_volume
+            )
+
+            previous_i = i
+            imbalance_tick_buy -= imbalance_tick_buy[i]
+            imbalance_volume_buy -= imbalance_volume_buy[i]
+            imbalance_volume_sell -= imbalance_volume_sell[i]
+            current_group += 1
+
+    tick['group'] = group
+    groupby = tick.groupby('group')
+
+    bars = groupby['price'].ohlc()
+    bars[['volume', 'value']] = groupby[['volume', 'value']].sum()
+    bars['t'] = groupby['t'].first()
+
+    bars.set_index('t', inplace=True)
+
+    return bars
+
+
 def bband(data: pd.Series, window: int = 21, width: float = 0.005):
     """
     Bollinger Band를 구축합니다
@@ -299,17 +421,39 @@ def bband(data: pd.Series, window: int = 21, width: float = 0.005):
     return avg, upper, lower, std0
 
 
-def pcaWeights(cov, riskDist=None, risktarget=1.0):
+def pcaWeights(cov, riskDist=None, risktarget=1.0, valid=False):
     """
     Rick Allocation Distribution을 따라서 Risk Target을 매치합니다
+
+    Argument
+    ----------------------------
+    cov : pandas.DataFrame 형태의 Covariance Matrix를 input으로 합니다
+    riskDist(default = None) : 사용자 지정 리스크 분포입니다. None이라면 코드는 모든 리스크가 최소 고유값을 갖는 주성분에 배분되는 것으로 가정합니다.
+    riskTarget(default = 1.0) : riskDist에서의 비중을 조절할 수 있습니다. 기본값은 1.0입니다
+    vaild(default = False) : riskDist를 검증하고 싶으면 True로 지정합니다. 이 경우 결과값은 (wghts, ctr)의 형태로 출력됩니다
+
     """
-    eVal, eVec = np.linalg.eigh(cov)  # Hermitian Matrix이어야 함
+    eVal, eVec = np.linalg.eigh(cov)  # Hermitian Matrix
     indices = eVal.argsort()[::-1]
     eVal, eVec = eVal[indices], eVec[:, indices]
-    if riskDist in None:
+    if riskDist is None:
+        riskDist = np.zeros(cov.shape[0])
+        riskDist[-1] = 1.
+
+    loads = riskTarget * (riskDist / eVal) ** 0.5
+    wghts = np.dot(eVec, np.reshape(loads, (-1, 1)))
+
+    if vaild == True:
+        ctr = (loads / riskTarget) ** 2 * eVal  # riskDist 검증
+        return (wghts, ctr)
+    else:
+        return wghts
 
 
 def cumsum_events(df: pd.Series, limit: float):
+    """
+    이벤트 기반의 표본 추출을 하는 함수입니다
+    """
     idx, _up, _dn = [], 0, 0
     diff = df.diff()
     for i in range(len(diff)):
@@ -336,7 +480,7 @@ def getDailyVolatility(close, span=100):
     """
     Daily Rolling Volatility를 추정하는 함수입니다
 
-    Hyper Parameter
+    Argument
     ----------------------------
     span(default = 100) : Rolling할 Number of Days를 지정
     """
@@ -354,6 +498,14 @@ def getDailyVolatility(close, span=100):
 
 
 def getTEvents(gRaw, h):
+    """
+    대칭 CUSUM filter를 적용하는 함수입니다
+
+    Argument
+    ----------------------------
+    gRaw : price 계열의 pandas.Series 객체을 input으로 받습니다
+    h : Volatility를 기반으로한 Horizonal Barrier를 설정하는 Argument 입니다
+    """
     tEvents, sPos, sNeg = [], 0, 0
     diff = np.log(gRaw).diff().dropna()
     for i in tqdm(diff.index[1:]):
@@ -365,7 +517,7 @@ def getTEvents(gRaw, h):
             print(sNeg + diff.loc[i], type(sNeg + diff.loc[i]))
             break
         sPos, sNeg = max(0., pos), min(0., neg)
-        if sNeg < -h:
+        if sNeg < - h:
             sNeg = 0;
             tEvents.append(i)
         elif sPos > h:
@@ -395,6 +547,24 @@ def addVerticalBarrier(tEvents, close, numDays=1):
 
 
 def applyPtSlOnT1(close, events, ptSl, molecule):
+    """
+    Triple Barrier Method를 구현하는 함수입니다
+    Horizonal Barrier, Vertical Barrier 중 어느 하나라도 Touch를 하면 Labeling을 진행합니다
+
+    Argument
+    ----------------------------
+    close : Price 정보가 담겨 있는 pandas.Series 계열의 데이터를 input으로 넣습니다
+    events : pandas.DataFrame으로서 다음의 열을 가집니다
+        - t1 : Vertical Barrier의 Time Stamp 값입니다. 이 값이 np.nan이라면 Vertical Barrier가 없습니다
+        - trgt : Horizonal Barrier의 단위 너비입니다
+
+    ptSl : 음이 아는 두 실수값의 리스트입니다
+        - ptSl[0] : trgt에 곱해서 Upper Barrier 너비를 설정하는 인수입니다. 값이 0이면 Upper Barrier가 존재하지 않습니다
+        - ptSl[1] : trgt에 곱해서 Lower Barrier 너비를 설정하는 인수입니다. 값이 0이면 Lower Barrier가 존재하지 않습니다
+
+    molecule : Single Thread에 의해 처리되는 Event Index의 부분 집합을 가진 리스트입니다
+
+    """
     events_ = events.loc[molecule]
     out = events_[['t1']].copy(deep=True)
 
@@ -423,6 +593,22 @@ def _apply_df(args):
 
 
 def getEvents(close, tEvents, ptSl, trgt, minRet, numThreads, t1=False, side=None):
+    """
+    베팅의 방향과 크기를 파악할 수 있는 함수입니다
+
+    Argument
+    ----------------------------
+    close : Price 정보가 담겨 있는 pandas.Series 계열의 데이터를 input으로 넣습니다
+    tEvents : 각 Triple Barrier Seed가 될 Time Stamp값을 가진 Pandas TimeIndex입니다
+    ptSl : 음이 아는 두 실수값의 리스트로, 두 Barrier의 너비를 설정합니다
+    trgt : 수익률의 절대값으로 표현한 목표 pandas.Series 객체의 데이터를 input으로 합니다
+    minRet : Triple Barrier 검색을 진행할 때 필요한 최소 목표 수익률입니다
+    numThreads : 함수에서 현재 동시에 사용하고 있는 Thread의 수입니다
+
+    t1(default = False) : Vertical Barrier의 Time Stamp를 가진 pandas.Series 객체의 데이터를 input으로 합니다
+    side(default = None) : side 값을 input으로 넣습니다
+
+    """
     # 1) 목표 구하기
     for i in tEvents:
         if i not in trgt.index:
@@ -434,15 +620,15 @@ def getEvents(close, tEvents, ptSl, trgt, minRet, numThreads, t1=False, side=Non
     if t1 is False:
         t1 = pd.Series(pd.NaT, index=tEvents)
 
-    # 3) t1에 손절을 적용해 이벤트 객체를 형성한다
+    # 3) t1에 손절을 적용해 이벤트 객체를 형성
     if side is None:
         side_, ptSl_ = pd.Series(1., index=trgt.index), [ptSl[0], ptSl[0]]
     else:
         side_, ptSl_ = side.loc[side.index & trgt.index], ptSl[:2]
 
     events = pd.concat({'t1': t1, 'trgt': trgt, 'side': side_}, axis=1).dropna(subset=['trgt'])
-    df0 = mpPandasObj(func=applyPtSlOnT1, pdObj=('molecule', events.index),
-                      numThreads=numThreads, close=close, events=events, ptSl=np.array(ptSl_))
+    df0 = fmp.mpPandasObj(func=applyPtSlOnT1, pdObj=('molecule', events.index),
+                          numThreads=numThreads, close=close, events=events, ptSl=np.array(ptSl_))
     events['t1'] = df0.dropna(how='all').min(axis=1)  # pd.min ignores nan
 
     if side is None:
@@ -518,9 +704,9 @@ def getBinsNew(events, close, t1=None):
     if 'side' not in events_:
         # only applies when not meta-labeling
         # to update bin to 0 when vertical barrier is touched, we need the original
-        # vertical barrier series since the events['t1'] is the time of first
-        # touch of any barrier and not the vertical barrier specifically.
-        # The index of the intersection of the vertical barrier values and the
+        # vertical barrier series since the events['t1'] is the time of first 
+        # touch of any barrier and not the vertical barrier specifically. 
+        # The index of the intersection of the vertical barrier values and the 
         # events['t1'] values indicate which bin labels needs to be turned to 0
         vtouch_first_idx = events[events['t1'].isin(t1.values)].index
         out.loc[vtouch_first_idx, 'bin'] = 0.
@@ -585,7 +771,7 @@ def mpNumCoEvents(closeIdx, t1, molecule):
 def mpSampleTW(t1, numCoEvents, molecule):
     """
     :param t1: pd series, timestamps of the vertical barriers. (index: eventStart, value: eventEnd).
-    :param numCoEvent:
+    :param numCoEvent: 
     :param molecule: the date of the event on which the weight will be computed
         + molecule[0] is the date of the first event on which the weight will be computed
         + molecule[-1] is the date of the last event on which the weight will be computed
@@ -615,15 +801,19 @@ def SampleTW(close, events, numThreads):
     out = events[['t1']].copy(deep=True)
     out['t1'] = out['t1'].fillna(close.index[-1])
     events['t1'] = events['t1'].fillna(close.index[-1])
-    numCoEvents = mpPandasObj(mpNumCoEvents, ('molecule', events.index), numThreads, closeIdx=close.index, t1=out['t1'])
+    numCoEvents = fmp.mpPandasObj(mpNumCoEvents, ('molecule', events.index), numThreads, closeIdx=close.index,
+                                  t1=out['t1'])
     numCoEvents = numCoEvents.loc[~numCoEvents.index.duplicated(keep='last')]
     numCoEvents = numCoEvents.reindex(close.index).fillna(0)
-    out['tW'] = mpPandasObj(mpSampleTW, ('molecule', events.index), numThreads, t1=out['t1'], numCoEvents=numCoEvents)
+    out['tW'] = fmp.mpPandasObj(mpSampleTW, ('molecule', events.index), numThreads, t1=out['t1'],
+                                numCoEvents=numCoEvents)
     return out
 
 
 def bbands(price, window=None, width=None, numsd=None):
-    """ returns average, upper band, and lower band"""
+    """
+    Bollinger Band를 구축해주는 함수입니다 
+    """
     ave = price.rolling(window).mean()
     sd = price.rolling(window).std(ddof=0)
     if width:

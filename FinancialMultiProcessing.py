@@ -9,7 +9,6 @@ import copy
 import platform
 from multiprocessing import cpu_count
 
-
 def _pickle_method(method):
     func_name = method.im_func.__name__
     obj = method.im_self
@@ -267,3 +266,37 @@ def mpJobList(func, argList, numThreads, mpBatches=1, linMols=True, redux=None, 
                            reduxInPlace=reduxInPlace, cpus=cpus)
     # no need to process an outputed list, save memory and time
     return out
+
+
+def mpNumCoEvents(closeIdx, t1, molecule):
+    """
+    Compute the number of concurrent events per bar
+    :params closeIdx: pd.df, the index of the close price
+    :param t1: pd series, timestamps of the vertical barriers. (index: eventStart, value: eventEnd).
+    :param molecule: the date of the event on which the weight will be computed
+        + molecule[0] is the date of the first event on which the weight will be computed
+        + molecule[-1] is the date of the last event on which the weight will be computed
+    Any event that starts before t1[molecule].max() impacts the count
+    :return:
+        count: pd.Series, the number of concurrent event per bar
+    """
+    # 1) Find events that span the period [molecule[0], molecule[-1]]
+    # unclosed events still impact other weights
+    # fill the unclosed events with the last available (index) date
+    t1 = t1.fillna(closeIdx[-1])
+    # events that end at or after molecule[0] (the first event date)
+    t1 = t1[t1 >= molecule[0]]
+    # events that start at or before t1[molecule].max() which is the furthest stop date in the batch
+    t1 = t1.loc[: t1[molecule].max()]
+
+    # 2) Count events spanning a bar
+    # find the indices begining start date ([t1.index[0]) and the furthest stop date (t1.max())
+    iloc = closeIdx.searchsorted(np.array([t1.index[0], t1.max()]))
+    # form a 0-array, index: from the begining start date to the furthest stop date
+    count = pd.Series(0, index=closeIdx[iloc[0]: iloc[1] + 1])
+    # for each signal t1 (index: eventStart, value: eventEnd)
+    for tIn, tOut in t1.iteritems():
+        # add 1 if and only if [t_(i,0), t_(i.1)] overlaps with [t-1,t]
+        count.loc[tIn: tOut] += 1  # every timestamp between tIn and tOut
+    # compute the number of labels concurrents at t
+    return count.loc[molecule[0]: t1[molecule].max()]  # only return the timespan of the molecule
