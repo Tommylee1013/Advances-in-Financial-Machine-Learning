@@ -668,7 +668,7 @@ def getBins(events, close):
     return out
 
 
-def dropLabels(events, minPct=0.05):
+def dropLabels(events, minPct = 0.05):
     # 예제가 부족할 경우 가중치를 적용해 레이블을 제거한다.
     for i in range(100):
         df0 = events['bin'].value_counts(normalize=True)
@@ -736,28 +736,32 @@ def get_down_cross(df):
 
 
 # Chapter 4
-def mpNumCoEvents(closeIdx, t1, molecule):
+def concurrent_bar(closeIdx, t1, molecule):
     """
-    Compute the number of concurrent events per bar
-    :params closeIdx: pd.df, the index of the close price
-    :param t1: pd series, timestamps of the vertical barriers. (index: eventStart, value: eventEnd).
-    :param molecule: the date of the event on which the weight will be computed
-        + molecule[0] is the date of the first event on which the weight will be computed
-        + molecule[-1] is the date of the last event on which the weight will be computed
-    Any event that starts before t1[molecule].max() impacts the count
-    :return:
-        count: pd.Series, the number of concurrent event per bar
+    Bar별로 공존하는 Event의 개수를 계산하여 Label의 고유도를 계산하는 함수입니다
+
+    Argument
+    ----------------------------
+    closeIdx : 가격 계열의 data를 Value로 가지는 Index를 input으로 합니다
+    t1 : pandas.Series형태의 데이터로, Vertical Barrier를 형성하는 timestamp 정보를 input으로 합니다
+    molecule : 가중값이 계산될 이벤트의 시간 정보를 input으로 합니다
+        molecule[0]은 가중값이 계산될 첫 이벤트 시간입니다
+        molecule[-1]은 가중값이 계산될 마지막 이벤트 시간입니다
+
+    t1[molecule].max()이전에 발생하는 모든 이벤트는 개수에 영향을 미치게 됩니다
+
+    Return
+    ----------------------------
+    count : pandas.Series 형태로 Concurrent Bar의 개수가 Bar마다 출력되어 나옵니다
     """
-    # 1) Find events that span the period [molecule[0], molecule[-1]]
-    # unclosed events still impact other weights
+    # 1) [molecule[0], molecule[-1]]에서 Event를 탐색합니다
     # fill the unclosed events with the last available (index) date
-    t1 = t1.fillna(closeIdx[-1])
-    # events that end at or after molecule[0] (the first event date)
-    t1 = t1[t1 >= molecule[0]]
-    # events that start at or before t1[molecule].max() which is the furthest stop date in the batch
+    t1 = t1.fillna(closeIdx[-1]) # 드러난 이벤트들은 다른 가중값에 영향을 미쳐야 합니다
+    t1 = t1[t1 >= molecule[0]] # molecule[0]의 마지막이나 이후에 발생하는 이벤트입니다
+    # t1[molecule].max() 이전이나 시작 시에 발생하는 이벤트입니다
     t1 = t1.loc[: t1[molecule].max()]
 
-    # 2) Count events spanning a bar
+    # 2) 바에서 발생하는 이벤트의 개수를 알아보는 과정입니다
     # find the indices begining start date ([t1.index[0]) and the furthest stop date (t1.max())
     iloc = closeIdx.searchsorted(np.array([t1.index[0], t1.max()]))
     # form a 0-array, index: from the begining start date to the furthest stop date
@@ -770,7 +774,7 @@ def mpNumCoEvents(closeIdx, t1, molecule):
     return count.loc[molecule[0]: t1[molecule].max()]  # only return the timespan of the molecule
 
 
-def mpSampleTW(t1, numCoEvents, molecule):
+def average_uniqueness(t1, numCoEvents, molecule):
     """
     :param t1: pd series, timestamps of the vertical barriers. (index: eventStart, value: eventEnd).
     :param numCoEvent: 
@@ -790,7 +794,7 @@ def mpSampleTW(t1, numCoEvents, molecule):
     return wght
 
 
-def SampleTW(close, events, numThreads):
+def sample_weights(close, events, numThreads):
     """
     :param close: A pd series of prices
     :param events: A Pd dataframe
@@ -803,18 +807,28 @@ def SampleTW(close, events, numThreads):
     out = events[['t1']].copy(deep=True)
     out['t1'] = out['t1'].fillna(close.index[-1])
     events['t1'] = events['t1'].fillna(close.index[-1])
-    numCoEvents = fmp.mpPandasObj(mpNumCoEvents, ('molecule', events.index), numThreads, closeIdx=close.index,
+    numCoEvents = fmp.mpPandasObj(concurrent_bar, ('molecule', events.index), numThreads, closeIdx=close.index,
                                   t1=out['t1'])
     numCoEvents = numCoEvents.loc[~numCoEvents.index.duplicated(keep='last')]
     numCoEvents = numCoEvents.reindex(close.index).fillna(0)
-    out['tW'] = fmp.mpPandasObj(mpSampleTW, ('molecule', events.index), numThreads, t1=out['t1'],
-                                numCoEvents=numCoEvents)
+    out['tW'] = fmp.mpPandasObj(average_uniqueness, ('molecule', events.index), numThreads, t1=out['t1'],
+                                numCoEvents = numCoEvents)
     return out
 
 
-def bbands(price, window=None, width=None, numsd=None):
+def bbands(price, window = None, width = None, numsd = None):
     """
-    Bollinger Band를 구축해주는 함수입니다 
+    Bollinger Band를 구축해주는 함수입니다
+
+    Argument
+    ----------------------------
+    price : pandas.Series 형태의 가격을 input으로 합니다
+
+    Parameter
+    ----------------------------
+    window(default = 0) : rolling할 days의 값을 numerical input data로 지정합니다
+    width(default = 0) : Bollinger Band 구축 시 상한 하한을 지정해주는 parameter입니다
+    numsd(default = 0) : Bollinger Band 구축 시 상한 하한을 변동성으로 지정해주는 parameter입니다
     """
     ave = price.rolling(window).mean()
     sd = price.rolling(window).std(ddof=0)
