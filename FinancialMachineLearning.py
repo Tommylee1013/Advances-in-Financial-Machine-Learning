@@ -638,18 +638,20 @@ def getEvents(close, tEvents, ptSl, trgt, minRet, numThreads, t1=False, side=Non
 
 
 def getBins(events, close):
-    '''
-    이벤트의 출력 (있다면 방향 정보도 포함)
-    이벤트는 DataFrame이다
+    """
+    이벤트를 감지해 출력하는 함수입니다. 가능하다면 베팅 사이드에 대한 정보도 포함합니다.
 
-    - events.index는 event의 시작 시간
-    - events['t1']은 event의 마지막 시간
-    - events['trgt']는 event의 타깃
-    - events['side'](옵션)는 알고리즘의 방향을 의미
+    Argument
+    ----------------------------
+    events : 감지된 Events가 존재하는 pandas DataFrame형태의 input data입니다. 아래와 같은 column을 가집니다
+        - t1 : event의 마지막 시간을 의미합니다
+        - trgt : event의 Target을 의미합니다
+        - side : Position의 방향을 의미합니다 (상승, 하락)
 
-    Case 1 ('side'가 이벤트에 없음) : bin in (-1, 1) <- 가격 변화에 의한 레이블
-    Case 2 ('side'가 이벤트에 있음) : bin in (0, 1) <- 손익(pnl)에 의한 레이블 (meta labeling)
-    '''
+    Case 1 ('side'가 이벤트에 없음) : bin in (-1, 1) 가격 변화에 의한 레이블
+    Case 2 ('side'가 이벤트에 있음) : bin in (0, 1) 손익(pnl)에 의한 레이블 (meta labeling)
+    """
+
     # 1) 가격과 이벤트를 일치
     events_ = events.dropna(subset=['t1'])
     px = events_.index.union(events_['t1'].values).drop_duplicates()
