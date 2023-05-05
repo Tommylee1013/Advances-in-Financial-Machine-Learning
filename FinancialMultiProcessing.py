@@ -15,8 +15,6 @@ def _pickle_method(method):
     cls = method.im_class
     return _unpickle_method, (func_name, obj, cls)
 
-
-# ________________________________
 def _unpickle_method(func_name, obj, cls):
     for cls in cls.mro():
         try:
@@ -221,8 +219,8 @@ def processJobsRedux(jobs, task=None, cpus=4, redux=None, reduxArgs={}, reduxInP
     return out
 
 
-def mpJobList(func, argList, numThreads, mpBatches=1, linMols=True, redux=None, reduxArgs={}, reduxInPlace=False,
-              **kargs):
+def mpJobList(func, argList, numThreads, mpBatches = 1, linMols = True,
+              redux = None, reduxArgs = {}, reduxInPlace = False, **kargs):
     '''
     Parallelize jobs, return a dataframe or series
     :params func: function to be parallelized. Returns a DataFrame

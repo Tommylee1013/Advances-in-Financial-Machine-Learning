@@ -39,7 +39,10 @@ pbar = ProgressBar()
 pbar.register()
 
 
-# functions
+# ===============================================================================================================
+#           Bar Sampling
+# =================================================================================================================
+
 
 def getDataFrame(df):
     """
@@ -432,17 +435,14 @@ def bband(data: pd.Series, window: int = 21, width: float = 0.005):
     return avg, upper, lower, std0
 
 
-def pcaWeights(cov, riskDist=None, risktarget=1.0, valid=False):
+def pcaWeights(cov, riskDist = None, risktarget = 1.0, valid = False):
     """
     Rick Allocation Distribution을 따라서 Risk Target을 매치합니다
-
-    Argument
-    ----------------------------
-    cov : pandas.DataFrame 형태의 Covariance Matrix를 input으로 합니다
-    riskDist(default = None) : 사용자 지정 리스크 분포입니다. None이라면 코드는 모든 리스크가 최소 고유값을 갖는 주성분에 배분되는 것으로 가정합니다.
-    riskTarget(default = 1.0) : riskDist에서의 비중을 조절할 수 있습니다. 기본값은 1.0입니다
-    vaild(default = False) : riskDist를 검증하고 싶으면 True로 지정합니다. 이 경우 결과값은 (wghts, ctr)의 형태로 출력됩니다
-
+    :param cov: pandas.DataFrame 형태의 Covariance Matrix를 input으로 합니다
+    :param riskDist: 사용자 지정 리스크 분포입니다. None이라면 코드는 모든 리스크가 최소 고유값을 갖는 주성분에 배분되는 것으로 가정합니다.
+    :param risktarget: riskDist에서의 비중을 조절할 수 있습니다. 기본값은 1.0입니다
+    :param valid: riskDist를 검증하고 싶으면 True로 지정합니다. 이 경우 결과값은 (wghts, ctr)의 형태로 출력됩니다
+    :return:
     """
     eVal, eVec = np.linalg.eigh(cov)  # Hermitian Matrix
     indices = eVal.argsort()[::-1]
@@ -464,6 +464,9 @@ def pcaWeights(cov, riskDist=None, risktarget=1.0, valid=False):
 def cumsum_events(df: pd.Series, limit: float):
     """
     이벤트 기반의 표본 추출을 하는 함수입니다
+    :param df: pandas.Series 형태의 가격 데이터입니다
+    :param limit: Barrier를 지정하는 threshold입니다. numerical data이며, 높게 지정할 수록 label이 적게 추출됩니다
+    :return:
     """
     idx, _up, _dn = [], 0, 0
     diff = df.diff()
@@ -486,6 +489,9 @@ def cumsum_events(df: pd.Series, limit: float):
             idx.append(i)
     return idx
 
+# ===============================================================================================================
+#           Labeling
+# =================================================================================================================
 
 def getDailyVolatility(close, span=100):
     """
@@ -745,8 +751,10 @@ def get_down_cross(df):
     crit2 = df.fast < df.slow
     return df.fast[(crit1) & (crit2)]
 
+# ===============================================================================================================
+#           Sample Weights
+# =================================================================================================================
 
-# Chapter 4
 def getConcurrentBar(closeIdx, t1, molecule):
     """
     Bar별로 공존하는 Event의 개수를 계산하여 Label의 고유도를 계산하는 함수입니다
@@ -810,11 +818,11 @@ def mpSampleWeights(close, events, numThreads):
     out = events[['t1']].copy(deep=True)
     out['t1'] = out['t1'].fillna(close.index[-1])
     events['t1'] = events['t1'].fillna(close.index[-1])
-    numCoEvents = fmp.mpPandasObj(concurrent_bar, ('molecule', events.index), numThreads, closeIdx=close.index,
+    numCoEvents = fmp.mpPandasObj(getConcurrentBar, ('molecule', events.index), numThreads, closeIdx=close.index,
                                   t1=out['t1'])
     numCoEvents = numCoEvents.loc[~numCoEvents.index.duplicated(keep='last')]
     numCoEvents = numCoEvents.reindex(close.index).fillna(0)
-    out['tW'] = fmp.mpPandasObj(average_uniqueness, ('molecule', events.index), numThreads, t1=out['t1'],
+    out['tW'] = fmp.mpPandasObj(getAvgLabelUniq, ('molecule', events.index), numThreads, t1=out['t1'],
                                 numCoEvents = numCoEvents)
     return out
 
@@ -943,7 +951,7 @@ def auxMC(numObs, numBars, maxH):
     return {'stdU': stdU, 'seqU': seqU}
 
 
-def mainMC(numObs = 10, numBars=100, maxH=5, numIters=1E6, numThreads=24):
+def mainMC(numObs = 10, numBars = 100, maxH = 5, numIters = 1E6, numThreads = 24):
     # Monte Carlo experiments
     jobs = []
     for _ in range(int(numIters)):
@@ -952,7 +960,7 @@ def mainMC(numObs = 10, numBars=100, maxH=5, numIters=1E6, numThreads=24):
     if numThreads == 1:
         out = fmp.processJobs_(jobs)
     else:
-        out = fmp.processJobs(jobs, numThreads=numThreads)
+        out = fmp.processJobs(jobs, numThreads = numThreads)
     print(pd.DataFrame(out).describe())
     return
 
@@ -975,32 +983,32 @@ def SampleW(close, events, numThreads):
     :param numThreads: constant, The no. of threads concurrently used by the function
     """
     out = events[['t1']].copy(deep=True)
-    numCoEvents = mpPandasObj(mpNumCoEvents, ('molecule', events.index), numThreads, closeIdx=close.index,
+    numCoEvents = fmp.mpPandasObj(getConcurrentBar, ('molecule', events.index), numThreads, closeIdx=close.index,
                               t1=events['t1'])
     numCoEvents = numCoEvents.loc[~numCoEvents.index.duplicated(keep='last')]
     numCoEvents = numCoEvents.reindex(close.index).fillna(0)
-    out['w'] = mpPandasObj(mpSampleW, ('molecule', events.index), numThreads, t1=events['t1'], numCoEvents=numCoEvents,
+    out['w'] = fmp.mpPandasObj(mpSampleW, ('molecule', events.index), numThreads, t1=events['t1'], numCoEvents=numCoEvents,
                            close=close)
     out['w'] *= out.shape[0] / out['w'].sum()  # normalised, sum up to sample size
 
     return out
 
 
-def get_Concur_Uniqueness(close, events, numThreads):
-    out = events[['t1']].copy(deep=True)
+def getConcurUniqueness(close, events, numThreads):
+    out = events[['t1']].copy(deep = True)
     out['t1'] = out['t1'].fillna(close.index[-1])
     events['t1'] = events['t1'].fillna(close.index[-1])
-    numCoEvents = mpPandasObj(mpNumCoEvents, ('molecule', events.index), numThreads, closeIdx=close.index, t1=out['t1'])
+    numCoEvents = fmp.mpPandasObj(getConcurrentBar, ('molecule', events.index), numThreads, closeIdx = close.index, t1 = out['t1'])
     numCoEvents = numCoEvents.loc[~numCoEvents.index.duplicated(keep='last')]
     numCoEvents = numCoEvents.reindex(close.index).fillna(0)
-    out['tW'] = mpPandasObj(mpSampleTW, ('molecule', events.index), numThreads, t1=out['t1'], numCoEvents=numCoEvents)
-    out['w'] = mpPandasObj(mpSampleW, ('molecule', events.index), numThreads, t1=events['t1'], numCoEvents=numCoEvents,
+    out['tW'] = fmp.mpPandasObj(getAvgLabelUniq, ('molecule', events.index), numThreads, t1=out['t1'], numCoEvents = numCoEvents)
+    out['w'] = fmp.mpPandasObj(mpSampleW, ('molecule', events.index), numThreads, t1=events['t1'], numCoEvents = numCoEvents,
                            close=close)
     out['w'] *= out.shape[0] / out['w'].sum()  # normalised, sum up to sample size
     return out
 
 
-def getTimeDecay(tW, clfLastW=1.):
+def getTimeDecay(tW, clfLastW = 1.):
     """
     apply piecewise-linear decay to observed uniqueness (tW)
     clfLastW = 1: no time decay
@@ -1019,3 +1027,179 @@ def getTimeDecay(tW, clfLastW=1.):
     clfW[clfW < 0] = 0  # neg weight -> 0
     print(const, slope)
     return clfW
+
+# ===============================================================================================================
+#      Fractionally Differentiated Features
+# =================================================================================================================
+
+def getWeights(d, size):
+    """
+    thres > 0 유의미하지 않은 가중값을 제거하는 함수입니다
+    :param d: 양의 실수인 미분 차수입니다. float data를 input으로 합니다
+    :param size: 기간을 의미하는 parameter입니다. size가 클수록 긴 기간의 weight를 계산할 수 있습니다 (0으로 수렴합니다)
+    :return:
+    """
+    w = [1.]
+    for k in range(1, size):
+        w_ = -w[-1] / k * (d - k + 1)
+        w.append(w_)
+    w = np.array(w[:: -1]).reshape(-1, 1)
+    return w
+
+def plotWeights(dRange, nPlots, size):
+    """
+    Weight를 Plotting하는 함수입니다
+    :param dRange:
+    :param nPlots:
+    :param size:
+    :return:
+    """
+    w = pd.DataFrame()
+    for d in np.linspace(dRange[0], dRange[1], nPlots):
+        w_ = getWeights(d, size=size)
+        w_ = pd.DataFrame(w_, index=range(w_.shape[0])[:: -1], columns=[d])
+        w = w.join(w_, how='outer')
+    ax = w.plot()
+    ax.legend(loc='upper left')
+    plt.show()
+    return
+
+def fracDiff(series, d, thres = .01):
+    """
+    NaN을 처리하여 윈도우 너비를 증가시키는 함수입니다
+    :param series: Price Sequence를 가지는 pandas.Series 형태의 data를 input으로 합니다
+    :param d: 미분 차수를 Hyper Parameter로 넣습니다. float형 data를 input으로 합니다
+    :param thres: 임계치를 설정하는 Hyper Parameter입니다. p-value가 0.01을 초과할 경우 계산이 정지됩니다
+    :return:
+    """
+    # 1) Compute weights for the longest series
+    w = getWeights(d, series.shape[0])  # each obs has a weight
+    # 2) Determine initial calcs to be skipped based on weight-loss threshold
+    w_ = np.cumsum(abs(w))  # cumulative weights
+    w_ /= w_[-1]  # determine the relative weight-loss
+    skip = w_[w_ > thres].shape[0]  # the no. of results where the weight-loss is beyond the acceptable value
+    # 3) Apply weights to values
+    df = {}  # empty dictionary
+    for name in series.columns:
+        # fill the na prices
+        seriesF = series[[name]].fillna(method='ffill').dropna()
+        df_ = pd.Series()  # create a pd series
+        for iloc in range(skip, seriesF.shape[0]):
+            loc = seriesF.index[iloc]  # find the iloc th obs
+
+            test_val = series.loc[loc, name]  # must resample if duplicate index
+            if isinstance(test_val, (pd.Series, pd.DataFrame)):
+                test_val = test_val.resample('1m').mean()
+
+            if not np.isfinite(test_val).any():
+                continue  # exclude NAs
+            try:  # the (iloc)^th obs will use all the weights from the start to the (iloc)^th
+                df_.loc[loc] = np.dot(w[-(iloc + 1):, :].T, seriesF.loc[:loc])[0, 0]
+            except:
+                continue
+        df[name] = df_.copy(deep=True)
+    df = pd.concat(df, axis=1)
+    return df
+
+
+def getWeights_FFD(d, thres):
+    # thres>0 drops insignificant weights
+    w = [1.]
+    k = 1
+    while abs(w[-1]) >= thres:
+        w_ = -w[-1] / k * (d - k + 1)
+        w.append(w_)
+        k += 1
+    w = np.array(w[:: -1]).reshape(-1, 1)[1:]
+    return w
+
+
+def fracDiff_FFD(series, d, thres=1e-5):
+    """
+    Constant width window (new solution)
+    Note 1: thres determines the cut-off weight for the window
+    Note 2: d can be any positive fractional, not necessarily bounded [0,1].
+    """
+    # 1) Compute weights for the longest series
+    w = getWeights_FFD(d, thres)
+    # w = getWeights(d, series.shape[0])
+    # w=getWeights_FFD(d,thres)
+    width = len(w) - 1
+    # 2) Apply weights to values
+    df = {}  # empty dict
+    for name in series.columns:
+        seriesF = series[[name]].fillna(method='ffill').dropna()
+        df_ = pd.Series()  # empty pd.series
+        for iloc1 in range(width, seriesF.shape[0]):
+            loc0 = seriesF.index[iloc1 - width]
+            loc1 = seriesF.index[iloc1]
+            if not np.isfinite(series.loc[loc1, name]):
+                continue  # exclude NAs
+            # try: # the (iloc)^th obs will use all the weights from the start to the (iloc)^th
+            df_[loc1] = np.dot(w.T, seriesF.loc[loc0: loc1])[0, 0]
+            # except:
+            #     continue
+
+        df[name] = df_.copy(deep=True)
+    df = pd.concat(df, axis=1)
+    return df
+
+
+def plotMinFFD():
+    """
+    adfuller test를 통과하는 최소의 d값을 찾습니다
+    :return:
+    """
+    from statsmodels.tsa.stattools import adfuller
+    path = './'
+    instName = 'ES1_Index_Method12'
+    out = pd.DataFrame(columns=['adfStat', 'pVal', 'lags', 'nObs', '95% conf', 'corr'])
+    df0 = pd.read_csv(path + instName + '.csv', index_col=0, parse_dates=True)
+    for d in np.linspace(0, 1, 11):
+        df1 = np.log(df0[['Close']]).resample('1D').last()  # downcast to daily obs
+        df2 = fracDiff_FFD(df1, d, thres=.01)
+        corr = np.corrcoef(df1.loc[df2.index, 'Close'], df2['Close'])[0, 1]
+        df2 = adfuller(df2['Close'], maxlag=1, regression='c', autolag=None)
+        out.loc[d] = list(df2[: 4]) + [df2[4]['5%']] + [corr]  # with critical value
+    out.to_csv(path + instName + '_testMinFFD.csv')
+    out[['adfStat', 'corr']].plot(secondary_y='adfStat')
+    plt.axhline(out['95% conf'].mean(), linewidth=1, color='r', linestyle='dotted')
+    plt.savefig(path + instName + '_testMinFFD.png')
+    return
+
+def getOptimalFFD(data, start = 0, end = 1, interval = 10, t = 1e-5):
+    """
+
+    :param data:
+    :param start:
+    :param end:
+    :param interval:
+    :param t:
+    :return:
+    """
+    d = np.linspace(start, end, interval)
+    out = fmp.mpJobList(mpGetOptimalFFD, ('molecules', d), redux=pd.DataFrame.append, data=data)
+
+    return out
+
+def mpGetOptimalFFD(data, molecules, t=1e-5):
+    cols = ['adfStat', 'pVal', 'lags', 'nObs', '95% conf']
+    out = pd.DataFrame(columns=cols)
+
+    for d in molecules:
+        try:
+            dfx = fracDiff_FFD(data.to_frame(), d, thres=t)
+            dfx = sm.tsa.stattools.adfuller(dfx['price'], maxlag=1, regression='c', autolag=None)
+            out.loc[d] = list(dfx[:4]) + [dfx[4]['5%']]
+        except Exception as e:
+            print(f'{d} error: {e}')
+    return out
+
+
+def OptimalFFD(data, start=0, end=1, interval=10, t=1e-5):
+    for d in np.linspace(start, end, interval):
+        dfx = fracDiff_FFD(data.to_frame(), d, thres=t)
+        if sm.tsa.stattools.adfuller(dfx['price'], maxlag=1, regression='c', autolag=None)[1] < 0.05:
+            return d
+    print('no optimal d')
+    return d
