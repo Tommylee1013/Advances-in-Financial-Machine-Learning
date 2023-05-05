@@ -44,6 +44,10 @@ pbar.register()
 def getDataFrame(df):
     """
     High Frequency Data를 정리해주는 함수입니다.
+
+    Return
+    ----------------------------
+    - pandas.DataFrame형태의 OHCL Data가 반환됩니다
     """
     temp = df[['price', 'buy', 'sell', 'volume']]
     temp['v'] = temp.volume
@@ -54,9 +58,17 @@ def getDataFrame(df):
 
 # @jit(nopython=True)
 
-def mad_outlier(y, thresh=3.):
+def mad_outlier(y, thresh = 3.):
     """
     outlier를 탐지하는 함수입니다.
+
+    Argument
+    ----------------------------
+    - y : pandas.Series 형태의 Price 계열 input data입니다
+
+    HyperParameter
+    ----------------------------
+    - thresh(default = 3.0) : outlier를 탐지하기 위한 구간을 지정합니다
     """
     median = np.median(y)
     print(median)
@@ -164,11 +176,10 @@ def plot_sample_data(ref, sub, bar_type, *args, **kwds):
     return
 
 
-def count_bars(df, price_col='price'):
+def count_bars(df, price_col = 'price'):
     """
     일주일에 Bar가 Sampling되는 횟수를 계산해 줍니다
     """
-
     return df.groupby(pd.Grouper(freq='1W'))[price_col].count()
 
 
@@ -648,8 +659,8 @@ def getBins(events, close):
         - trgt : event의 Target을 의미합니다
         - side : Position의 방향을 의미합니다 (상승, 하락)
 
-    Case 1 ('side'가 이벤트에 없음) : bin in (-1, 1) 가격 변화에 의한 레이블
-    Case 2 ('side'가 이벤트에 있음) : bin in (0, 1) 손익(pnl)에 의한 레이블 (meta labeling)
+    - Case 1 ('side'가 이벤트에 없음) : bin in (-1, 1) 가격 변화에 의한 레이블
+    - Case 2 ('side'가 이벤트에 있음) : bin in (0, 1) 손익(pnl)에 의한 레이블 (meta labeling)
     """
 
     # 1) 가격과 이벤트를 일치
@@ -736,23 +747,15 @@ def get_down_cross(df):
 
 
 # Chapter 4
-def concurrent_bar(closeIdx, t1, molecule):
+def getConcurrentBar(closeIdx, t1, molecule):
     """
     Bar별로 공존하는 Event의 개수를 계산하여 Label의 고유도를 계산하는 함수입니다
-
-    Argument
-    ----------------------------
-    closeIdx : 가격 계열의 data를 Value로 가지는 Index를 input으로 합니다
-    t1 : pandas.Series형태의 데이터로, Vertical Barrier를 형성하는 timestamp 정보를 input으로 합니다
-    molecule : 가중값이 계산될 이벤트의 시간 정보를 input으로 합니다
+    :param closeIdx : 가격 계열의 data를 Value로 가지는 Index를 input으로 합니다
+    :param t1 : pandas.Series형태의 데이터로, Vertical Barrier를 형성하는 timestamp 정보를 input으로 합니다
+    :param molecule : 가중값이 계산될 이벤트의 시간 정보를 input으로 합니다. t1[molecule].max()이전에 발생하는 모든 이벤트는 개수에 영향을 미치게 됩니다
         molecule[0]은 가중값이 계산될 첫 이벤트 시간입니다
         molecule[-1]은 가중값이 계산될 마지막 이벤트 시간입니다
-
-    t1[molecule].max()이전에 발생하는 모든 이벤트는 개수에 영향을 미치게 됩니다
-
-    Return
-    ----------------------------
-    count : pandas.Series 형태로 Concurrent Bar의 개수가 Bar마다 출력되어 나옵니다
+    :return count : pandas.Series 형태로 Concurrent Bar의 개수가 Bar마다 출력되어 나옵니다
     """
     # 1) [molecule[0], molecule[-1]]에서 Event를 탐색합니다
     # fill the unclosed events with the last available (index) date
@@ -774,7 +777,7 @@ def concurrent_bar(closeIdx, t1, molecule):
     return count.loc[molecule[0]: t1[molecule].max()]  # only return the timespan of the molecule
 
 
-def average_uniqueness(t1, numCoEvents, molecule):
+def getAvgLabelUniq(t1, numCoEvents, molecule):
     """
     :param t1: pd series, timestamps of the vertical barriers. (index: eventStart, value: eventEnd).
     :param numCoEvent: 
@@ -794,7 +797,7 @@ def average_uniqueness(t1, numCoEvents, molecule):
     return wght
 
 
-def sample_weights(close, events, numThreads):
+def mpSampleWeights(close, events, numThreads):
     """
     :param close: A pd series of prices
     :param events: A Pd dataframe
@@ -816,19 +819,13 @@ def sample_weights(close, events, numThreads):
     return out
 
 
-def bbands(price, window = None, width = None, numsd = None):
+def getBollingerBand(price, window = None, width = None, numsd = None):
     """
     Bollinger Band를 구축해주는 함수입니다
-
-    Argument
-    ----------------------------
-    price : pandas.Series 형태의 가격을 input으로 합니다
-
-    Parameter
-    ----------------------------
-    window(default = 0) : rolling할 days의 값을 numerical input data로 지정합니다
-    width(default = 0) : Bollinger Band 구축 시 상한 하한을 지정해주는 parameter입니다
-    numsd(default = 0) : Bollinger Band 구축 시 상한 하한을 변동성으로 지정해주는 parameter입니다
+    :param price : pandas.Series 형태의 가격을 input으로 합니다
+    :param window : rolling할 days의 값을 numerical input data로 지정합니다(default = 0)
+    :param width : Bollinger Band 구축 시 상한 하한을 지정해주는 parameter입니다(default = 0)
+    :param numsd : Bollinger Band 구축 시 상한 하한을 변동성으로 지정해주는 parameter입니다(default = 0)
     """
     ave = price.rolling(window).mean()
     sd = price.rolling(window).std(ddof=0)
@@ -840,3 +837,185 @@ def bbands(price, window = None, width = None, numsd = None):
         upband = ave + (sd * numsd)
         dnband = ave - (sd * numsd)
         return price, np.round(ave, 3), np.round(upband, 3), np.round(dnband, 3)
+
+
+def getSampleWeights(close, events, numThreads):
+    """
+    :param close: A pd series of prices
+    :param events: A Pd dataframe
+        -   t1: the timestamp of vertical barrier. if the value is np.nan, no vertical barrier
+        -   trgr: the unit width of the horizontal barriers, e.g. standard deviation
+    :param numThreads: constant, The no. of threads concurrently used by the function
+    :return wght: pd.Series, the sample weight of each (volume) bar
+    """
+    out = events[['t1']].copy(deep=True)
+    out['t1'] = out['t1'].fillna(close.index[-1])
+    events['t1'] = events['t1'].fillna(close.index[-1])
+    numCoEvents = fmp.mpPandasObj(getConcurrentBar, ('molecule', events.index), numThreads, closeIdx=close.index, t1=out['t1'])
+    numCoEvents = numCoEvents.loc[~numCoEvents.index.duplicated(keep='last')]
+    numCoEvents = numCoEvents.reindex(close.index).fillna(0)
+    out['tW'] = fmp.mpPandasObj(mpSampleWeights, ('molecule', events.index), numThreads, t1=out['t1'], numCoEvents=numCoEvents)
+    return out
+
+
+def getIndMatrix(barIx, t1):
+    """
+    지표 행렬을 구축하는 함수입니다
+    :param barIx: Bar의 index를 input으로 합니다
+    :param t1: pandas.Series 형태의 Vertical Barrier의 timestamps를 input으로 합니다 (index: eventStart, value: eventEnd)
+    :return indM: binary matrix, 각 관측치의 Label에 price Bar가 미치는 영향을 보여줍니다
+    """
+    indM = pd.DataFrame(0, index=barIx, columns=range(t1.shape[0]))
+    for i, (t0, t1) in enumerate(t1.iteritems()):  # signal = obs
+        indM.loc[t0: t1, i] = 1.  # each obs each column, you can see how many bars are related to an obs/
+    return indM
+
+
+def getAvgUniqueness(indM):
+    """
+    각 측성 관측값의 고유도(Uniuqeness) 평균을 반환합니다
+    :param indM: getIndMatrix에 의해 구성된 Indicator Matrix를 input으로 합니다
+    :return avgU: average uniqueness of each observed feature
+    """
+    # 지표 행렬로부터의 평균 고유도
+    c = indM.sum(axis=1)  # concurrency, how many obs share the same bar
+    u = indM.div(c, axis=0)  # uniqueness, the more obs share the same bar, the less important the bar is
+    avgU = u[u > 0].mean()  # average uniquenessn
+    return avgU
+
+
+def seqBootstrap(indM, sLength=None):
+    """
+    Give the index of the features sampled by the sequential bootstrap
+    :param indM: binary matrix, indicate what (price) bars influence the label for each observation
+    :param sLength: optional, sample length, default: as many draws as rows in indM
+    """
+    # Generate a sample via sequential bootstrap
+    if sLength is None:  # default
+        sLength = indM.shape[1]  # sample length = # of rows in indM
+    # Create an empty list to store the sequence of the draws
+    phi = []
+    while len(phi) < sLength:
+        avgU = pd.Series()  # store the average uniqueness of the draw
+        for i in indM:  # for every obs
+            indM_ = indM[phi + [i]]  # add the obs to the existing bootstrapped sample
+            # get the average uniqueness of the draw after adding to the new phi
+            avgU.loc[i] = getAvgUniqueness(indM_).iloc[
+                -1]  # only the last is the obs concerned, others are not important
+        prob = avgU / avgU.sum()  # cal prob <- normalise the average uniqueness
+        phi += [np.random.choice(indM.columns, p=prob)]  # add a random sample from indM.columns with prob. = prob
+    return phi
+
+
+def main():
+    # t0: t1.index; t1: t1.values
+    t1 = pd.Series([2, 3, 5], index=[0, 2, 4])
+    # index of bars
+    barIx = range(t1.max() + 1)
+    # get indicator matrix
+    indM = getIndMatrix(barIx, t1)
+    phi = np.random.choice(indM.columns, size=indM.shape[1])
+    print(phi)
+    print('Standard uniqueness:', getAvgUniqueness(indM[phi]).mean())
+    phi = seqBootstrap(indM)
+    print(phi)
+    print('Sequential uniqueness:', getAvgUniqueness(indM[phi]).mean())
+
+def getRndT1(numObs, numBars, maxH):
+    # random t1 Series
+    t1 = pd.Series()
+    for _ in range(numObs):
+        ix = np.random.randint(0, numBars)
+        val = ix + np.random.randint(1, maxH)
+        t1.loc[ix] = val
+    return t1.sort_index()
+
+
+def auxMC(numObs, numBars, maxH):
+    # Parallelized auxiliary function
+    t1 = getRndT1(numObs, numBars, maxH)
+    barIx = range(t1.max() + 1)
+    indM = getIndMatrix(barIx, t1)
+    phi = np.random.choice(indM.columns, size=indM.shape[1])
+    stdU = getAvgUniqueness(indM[phi]).mean()
+    phi = seqBootstrap(indM)
+    seqU = getAvgUniqueness(indM[phi]).mean()
+    return {'stdU': stdU, 'seqU': seqU}
+
+
+def mainMC(numObs = 10, numBars=100, maxH=5, numIters=1E6, numThreads=24):
+    # Monte Carlo experiments
+    jobs = []
+    for _ in range(int(numIters)):
+        job = {'func': auxMC, 'numObs': numObs, 'numBars': numBars, 'maxH': maxH}
+        jobs.append(job)
+    if numThreads == 1:
+        out = fmp.processJobs_(jobs)
+    else:
+        out = fmp.processJobs(jobs, numThreads=numThreads)
+    print(pd.DataFrame(out).describe())
+    return
+
+
+def mpSampleW(t1, numCoEvents, close, molecule):
+    # Derive sample weight by return attribution
+    ret = np.log(close).diff()  # log-returns, so that they are additive
+    wght = pd.Series(index=molecule)
+    for tIn, tOut in t1.loc[wght.index].iteritems():
+        wght.loc[tIn] = (ret.loc[tIn: tOut] / numCoEvents.loc[tIn: tOut]).sum()
+    return wght.abs()
+
+
+def SampleW(close, events, numThreads):
+    """
+    :param close: A pd series of prices
+    :param events: A Pd dataframe
+        -   t1: the timestamp of vertical barrier. if the value is np.nan, no vertical barrier
+        -   trgr: the unit width of the horizontal barriers, e.g. standard deviation
+    :param numThreads: constant, The no. of threads concurrently used by the function
+    """
+    out = events[['t1']].copy(deep=True)
+    numCoEvents = mpPandasObj(mpNumCoEvents, ('molecule', events.index), numThreads, closeIdx=close.index,
+                              t1=events['t1'])
+    numCoEvents = numCoEvents.loc[~numCoEvents.index.duplicated(keep='last')]
+    numCoEvents = numCoEvents.reindex(close.index).fillna(0)
+    out['w'] = mpPandasObj(mpSampleW, ('molecule', events.index), numThreads, t1=events['t1'], numCoEvents=numCoEvents,
+                           close=close)
+    out['w'] *= out.shape[0] / out['w'].sum()  # normalised, sum up to sample size
+
+    return out
+
+
+def get_Concur_Uniqueness(close, events, numThreads):
+    out = events[['t1']].copy(deep=True)
+    out['t1'] = out['t1'].fillna(close.index[-1])
+    events['t1'] = events['t1'].fillna(close.index[-1])
+    numCoEvents = mpPandasObj(mpNumCoEvents, ('molecule', events.index), numThreads, closeIdx=close.index, t1=out['t1'])
+    numCoEvents = numCoEvents.loc[~numCoEvents.index.duplicated(keep='last')]
+    numCoEvents = numCoEvents.reindex(close.index).fillna(0)
+    out['tW'] = mpPandasObj(mpSampleTW, ('molecule', events.index), numThreads, t1=out['t1'], numCoEvents=numCoEvents)
+    out['w'] = mpPandasObj(mpSampleW, ('molecule', events.index), numThreads, t1=events['t1'], numCoEvents=numCoEvents,
+                           close=close)
+    out['w'] *= out.shape[0] / out['w'].sum()  # normalised, sum up to sample size
+    return out
+
+
+def getTimeDecay(tW, clfLastW=1.):
+    """
+    apply piecewise-linear decay to observed uniqueness (tW)
+    clfLastW = 1: no time decay
+    0 <= clfLastW <= 1: weights decay linearly over time, but every obersevation still receives a strictly positive weight
+    c = 0: weughts converge linearly to 0 as they become older
+    c < 0: the oldest portion cT of the observations receive 0 weight
+    c > 1: weights increase as they get older"""
+    # newest observation gets weight=1, oldest observation gets weight=clfLastW
+    clfW = tW.sort_index().cumsum()  # cumulative sum of the observed uniqueness
+    if clfLastW >= 0:  # if 0 <= clfLastW <= 1
+        slope = (1. - clfLastW) / clfW.iloc[-1]
+    else:  # if -1 <= clfLastW < 1
+        slope = 1. / ((clfLastW + 1) * clfW.iloc[-1])
+    const = 1. - slope * clfW.iloc[-1]
+    clfW = const + slope * clfW
+    clfW[clfW < 0] = 0  # neg weight -> 0
+    print(const, slope)
+    return clfW
