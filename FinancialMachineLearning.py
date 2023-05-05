@@ -1,5 +1,11 @@
-# libraries
-import pandas as pd, numpy as np, matplotlib.pyplot as plt, seaborn as sns
+# ===============================================================================================================
+#           Libraries
+# =================================================================================================================
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
 import matplotlib.gridspec as gridspec
 import matplotlib as mpl
 
@@ -38,11 +44,9 @@ pd.set_option('display.max_rows', 100)
 pbar = ProgressBar()
 pbar.register()
 
-
 # ===============================================================================================================
 #           Bar Sampling
 # =================================================================================================================
-
 
 def getDataFrame(df):
     """
@@ -64,14 +68,9 @@ def getDataFrame(df):
 def mad_outlier(y, thresh = 3.):
     """
     outlier를 탐지하는 함수입니다.
-
-    Argument
-    ----------------------------
-    - y : pandas.Series 형태의 Price 계열 input data입니다
-
-    HyperParameter
-    ----------------------------
-    - thresh(default = 3.0) : outlier를 탐지하기 위한 구간을 지정합니다
+    :param y: pandas.Series 형태의 Price 계열 input data입니다
+    :param thresh: outlier를 탐지하기 위한 구간을 지정합니다(default = 3.0)
+    :return:
     """
     median = np.median(y)
     print(median)
@@ -231,7 +230,7 @@ def plot_autocorr(bar_types, bar_returns):
     plt.tight_layout()
 
 
-def plot_hist(bar_types, bar_ret):
+def plot_hist(bar_types, bar_returns):
     f, axes = plt.subplots(len(bar_types), figsize=(10, 6))
     for i, (bar, typ) in enumerate(zip(bar_returns, bar_types)):
         g = sns.distplot(bar, ax=axes[i], kde=False, label=typ)
@@ -240,11 +239,11 @@ def plot_hist(bar_types, bar_ret):
     plt.tight_layout()
 
 
-def df_rolling_autocorr(df, window, lag=1):
+def df_rolling_autocorr(df, window, lag = 1):
     """
     DataFrame의 rolling column-wise autocorrelation을 계산합니다
     """
-    return (df.rolling(window=window).corr(df.shift(lag)))
+    return (df.rolling(window = window).corr(df.shift(lag)))
 
 
 def signed_tick(tick, initial_value=1.0):
@@ -252,11 +251,9 @@ def signed_tick(tick, initial_value=1.0):
     return (abs(diff) / diff).ffill().fillna(initial_value)
 
 
-def tick_imbalance_bar(tick, initial_expected_bar_size=150,
-                       initial_expected_signed_tick=.1,
-                       lambda_bar_size=.1,
-                       lambda_signed_tick=.1):
-    tick = tick.sort_index(ascending=True)
+def tick_imbalance_bar(tick, initial_expected_bar_size = 150, initial_expected_signed_tick = .1,
+                       lambda_bar_size = .1, lambda_signed_tick = .1):
+    tick = tick.sort_index(ascending = True)
     tick = tick.reset_index()
 
     # Part 1. Tick imbalance 값을 기반으로, bar numbering(`tick_imbalance_group`)
@@ -274,14 +271,9 @@ def tick_imbalance_bar(tick, initial_expected_bar_size=150,
         tick_imbalance_group.append(current_group)
 
         if abs(tick_imbalance[i]) >= abs(expected_tick_imbalance):  # 수식이 복잡해 보이지만 EMA임.
-            expected_bar_size = (
-                    lambda_bar_size * (i - previous_i + 1) +
-                    (1 - lambda_bar_size) * expected_bar_size
-            )
-            expected_signed_tick = (
-                    lambda_signed_tick * tick_imbalance[i] / (i - previous_i + 1) +
-                    (1 - lambda_signed_tick) * expected_signed_tick
-            )
+            expected_bar_size = (lambda_bar_size * (i - previous_i + 1) + (1 - lambda_bar_size) * expected_bar_size)
+            expected_signed_tick = (lambda_signed_tick * tick_imbalance[i] /
+                                    (i - previous_i + 1) + (1 - lambda_signed_tick) * expected_signed_tick)
             expected_tick_imbalance = expected_bar_size * expected_signed_tick
 
             tick_imbalance -= tick_imbalance[i]
@@ -302,69 +294,44 @@ def tick_imbalance_bar(tick, initial_expected_bar_size=150,
     return bars
 
 
-def tick_runs_bar(tick, initial_expected_bar_size,
-                  initial_buy_prob, lambda_bar_size=.1,
-                  lambda_buy_prob=.1):
+def tick_runs_bar(tick, initial_expected_bar_size, initial_buy_prob,
+                  lambda_bar_size=.1, lambda_buy_prob=.1):
     tick = tick.sort_index(ascending=True)
     tick = tick.reset_index()
-
     _signed_tick = signed_tick(tick)
     imbalance_tick_buy = _signed_tick.apply(lambda v: v if v > 0 else 0).cumsum()
     imbalance_tick_sell = _signed_tick.apply(lambda v: -v if v < 0 else 0).cumsum()
-
     group = []
-
     expected_bar_size = initial_expected_bar_size
     buy_prob = initial_buy_prob
     expected_runs = expected_bar_size * max(buy_prob, 1 - buy_prob)
-
     current_group = 1
     previous_i = 0
     for i in range(len(tick)):
         group.append(current_group)
 
         if max(imbalance_tick_buy[i], imbalance_tick_sell[i]) >= expected_runs:
-            expected_bar_size = (
-                    lambda_bar_size * (i - previous_i + 1) +
-                    (1 - lambda_bar_size) * expected_bar_size
-            )
-
-            buy_prob = (
-                    lambda_buy_prob * imbalance_tick_buy[i] / (i - previous_i + 1) +
-                    (1 - lambda_buy_prob) * buy_prob
-            )
-
+            expected_bar_size = (lambda_bar_size * (i - previous_i + 1) + (1 - lambda_bar_size) * expected_bar_size)
+            buy_prob = (lambda_buy_prob * imbalance_tick_buy[i] /
+                        (i - previous_i + 1) + (1 - lambda_buy_prob) * buy_prob)
             previous_i = i
             imbalance_tick_buy -= imbalance_tick_buy[i]
             imbalance_tick_sell -= imbalance_tick_sell[i]
             current_group += 1
-
     tick['group'] = group
     groupby = tick.groupby('group')
-
     bars = groupby['price'].ohlc()
     bars[['volume', 'value']] = groupby[['volume', 'value']].sum()
     bars['t'] = groupby['t'].first()
-
     bars.set_index('t', inplace=True)
-
     return bars
 
 
-def volume_runs_bar(
-        tick,
-        initial_expected_bar_size,
-        initial_buy_prob,
-        initial_buy_volume,
-        initial_sell_volume,
-        lambda_bar_size=.1,
-        lambda_buy_prob=.1,
-        lambda_buy_volume=.1,
-        lambda_sell_volume=.1
-):
+def volume_runs_bar(tick, initial_expected_bar_size, initial_buy_prob, initial_buy_volume,
+                    initial_sell_volume, lambda_bar_size=.1, lambda_buy_prob=.1,
+                    lambda_buy_volume=.1, lambda_sell_volume=.1):
     tick = tick.sort_index(ascending=True)
     tick = tick.reset_index()
-
     _signed_tick = signed_tick(tick)
     _signed_volume = _signed_tick * tick['volume']
     imbalance_tick_buy = _signed_tick.apply(lambda v: v if v > 0 else 0).cumsum()
@@ -385,43 +352,23 @@ def volume_runs_bar(
         group.append(current_group)
 
         if max(imbalance_volume_buy[i], imbalance_volume_sell[i]) >= expected_runs:
-            expected_bar_size = (
-                    lambda_bar_size * (i - previous_i + 1) +
-                    (1 - lambda_bar_size) * expected_bar_size
-            )
-
-            buy_prob = (
-                    lambda_buy_prob * imbalance_tick_buy[i] / (i - previous_i + 1) +
-                    (1 - lambda_buy_prob) * buy_prob
-            )
-
-            buy_volume = (
-                    lambda_buy_volume * imbalance_volume_buy[i] +
-                    (1 - lambda_buy_volume) * buy_volume
-            )
-
-            sell_volume = (
-                    lambda_sell_volume * imbalance_volume_sell[i] +
-                    (1 - lambda_sell_volume) * sell_volume
-            )
-
+            expected_bar_size = (lambda_bar_size * (i - previous_i + 1) + (1 - lambda_bar_size) * expected_bar_size)
+            buy_prob = (lambda_buy_prob * imbalance_tick_buy[i] /
+                        (i - previous_i + 1) + (1 - lambda_buy_prob) * buy_prob)
+            buy_volume = (lambda_buy_volume * imbalance_volume_buy[i] + (1 - lambda_buy_volume) * buy_volume)
+            sell_volume = (lambda_sell_volume * imbalance_volume_sell[i] + (1 - lambda_sell_volume) * sell_volume)
             previous_i = i
             imbalance_tick_buy -= imbalance_tick_buy[i]
             imbalance_volume_buy -= imbalance_volume_buy[i]
             imbalance_volume_sell -= imbalance_volume_sell[i]
             current_group += 1
-
     tick['group'] = group
     groupby = tick.groupby('group')
-
     bars = groupby['price'].ohlc()
     bars[['volume', 'value']] = groupby[['volume', 'value']].sum()
     bars['t'] = groupby['t'].first()
-
     bars.set_index('t', inplace=True)
-
     return bars
-
 
 def bband(data: pd.Series, window: int = 21, width: float = 0.005):
     """
@@ -493,7 +440,7 @@ def cumsum_events(df: pd.Series, limit: float):
 #           Labeling
 # =================================================================================================================
 
-def getDailyVolatility(close, span=100):
+def getDailyVolatility(close, span = 100):
     """
     Daily Rolling Volatility를 추정하는 함수입니다
 
@@ -510,7 +457,7 @@ def getDailyVolatility(close, span=100):
         df0 = close.loc[df0.index] / close.loc[df0.values].values - 1  # daily rets
     except Exception as e:
         print(f'error: {e}\nplease confirm no duplicate indices')
-    df0 = df0.ewm(span=span).std().rename('dailyVol')
+    df0 = df0.ewm(span = span).std().rename('dailyVol')
     return df0
 
 
@@ -563,7 +510,7 @@ def addVerticalBarrier(tEvents, close, numDays=1):
     return t1
 
 
-def applyPtSlOnT1(close, events, ptSl, molecule):
+def TripleBarrier(close, events, ptSl, molecule):
     """
     Triple Barrier Method를 구현하는 함수입니다
     Horizonal Barrier, Vertical Barrier 중 어느 하나라도 Touch를 하면 Labeling을 진행합니다
@@ -1113,7 +1060,6 @@ def getWeights_FFD(d, thres):
     w = np.array(w[:: -1]).reshape(-1, 1)[1:]
     return w
 
-
 def fracDiff_FFD(series, d, thres=1e-5):
     """
     Constant width window (new solution)
@@ -1143,7 +1089,6 @@ def fracDiff_FFD(series, d, thres=1e-5):
         df[name] = df_.copy(deep=True)
     df = pd.concat(df, axis=1)
     return df
-
 
 def plotMinFFD():
     """
@@ -1194,7 +1139,6 @@ def mpGetOptimalFFD(data, molecules, t=1e-5):
         except Exception as e:
             print(f'{d} error: {e}')
     return out
-
 
 def OptimalFFD(data, start=0, end=1, interval=10, t=1e-5):
     for d in np.linspace(start, end, interval):
