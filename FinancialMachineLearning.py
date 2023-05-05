@@ -28,8 +28,11 @@ from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import roc_curve, classification_report
-import FinancialMultiProcessing as fmp
-
+import copyreg, types, multiprocessing as mp
+import copy
+import platform
+from multiprocessing import cpu_count
+from sklearn.model_selection._split import _BaseKFold
 from numba import jit
 
 import pyarrow as pa
@@ -62,9 +65,7 @@ def getDataFrame(df):
     temp.index = pd.to_datetime(temp.index)
     return temp
 
-
-# @jit(nopython=True)
-
+@jit(nopython=True)
 def mad_outlier(y, thresh = 3.):
     """
     outlier를 탐지하는 함수입니다.
@@ -78,12 +79,9 @@ def mad_outlier(y, thresh = 3.):
     diff = np.sqrt(diff)
     print(diff)
     med_abs_deviation = np.median(diff)
-
     modified_z_score = 0.6745 * diff / med_abs_deviation
     print(modified_z_score)
-
     return modified_z_score > thresh
-
 
 def bar_sampling(df, column, threshold, tick=False):
     """
@@ -155,35 +153,11 @@ def select_sample_data(ref, sub, price_col, date):
 
     return xdf, xtdf
 
-
-def plot_sample_data(ref, sub, bar_type, *args, **kwds):
-    """
-    Sampling된 Data를 Plotting합니다
-    """
-
-    f, axes = plt.subplots(3, sharex=True, sharey=True, figsize=(10, 7))
-
-    ref.plot(*args, **kwds, ax=axes[0], label='price')
-    sub.plot(*args, **kwds, ax=axes[0], marker='X', ls='', label=bar_type)
-    axes[0].legend()
-
-    ref.plot(*args, **kwds, ax=axes[1], marker='o', label='price')
-    sub.plot(*args, **kwds, ax=axes[2], marker='X', ls='',
-             color='r', label=bar_type)
-
-    for ax in axes[1:]: ax.legend()
-
-    plt.tight_layout()
-
-    return
-
-
 def count_bars(df, price_col = 'price'):
     """
     일주일에 Bar가 Sampling되는 횟수를 계산해 줍니다
     """
     return df.groupby(pd.Grouper(freq='1W'))[price_col].count()
-
 
 def scale(s):
     """
@@ -191,25 +165,9 @@ def scale(s):
     """
     return (s - s.min()) / (s.max() - s.min())
 
-
-def plot_bar_counts(tick, volume, dollar):
-    """
-    Tick, Volume, Dollar Bard의 counting 횟수를 plotting하는 함수입니다
-    """
-    f, ax = plt.subplots(figsize=(15, 5))
-
-    tick.plot(ax=ax, ls='-', label='tick count')
-    volume.plot(ax=ax, ls='--', label='volume count')
-    dollar.plot(ax=ax, ls='-.', label='dollar count')
-
-    ax.set_title('Scaled Bar Counts')
-    ax.legend()
-
-
 def returns(s):
     arr = np.diff(np.log(s))
     return (pd.Series(arr, index=s.index[1:]))
-
 
 def get_test_stats(bar_types, bar_returns, test_func, *args, **kwds):
     dct = {bar: (int(bar_ret.shape[0]), test_func(bar_ret, *args, **kwds))
@@ -218,38 +176,15 @@ def get_test_stats(bar_types, bar_returns, test_func, *args, **kwds):
           .rename(index={0: 'sample size', 1: f'{test_func.__name__}_stat'}).T)
     return df
 
-
-def plot_autocorr(bar_types, bar_returns):
-    f, axes = plt.subplots(len(bar_types), figsize=(10, 7))
-
-    for i, (bar, typ) in enumerate(zip(bar_returns, bar_types)):
-        sm.graphics.tsa.plot_acf(bar, lags=120, ax=axes[i],
-                                 alpha=0.05, unbiased=True, fft=True,
-                                 zero=False,
-                                 title=f'{typ} AutoCorr')
-    plt.tight_layout()
-
-
-def plot_hist(bar_types, bar_returns):
-    f, axes = plt.subplots(len(bar_types), figsize=(10, 6))
-    for i, (bar, typ) in enumerate(zip(bar_returns, bar_types)):
-        g = sns.distplot(bar, ax=axes[i], kde=False, label=typ)
-        g.set(yscale='log')
-        axes[i].legend()
-    plt.tight_layout()
-
-
 def df_rolling_autocorr(df, window, lag = 1):
     """
     DataFrame의 rolling column-wise autocorrelation을 계산합니다
     """
     return (df.rolling(window = window).corr(df.shift(lag)))
 
-
 def signed_tick(tick, initial_value=1.0):
     diff = tick['price'] - tick['price'].shift(1)
     return (abs(diff) / diff).ffill().fillna(initial_value)
-
 
 def tick_imbalance_bar(tick, initial_expected_bar_size = 150, initial_expected_signed_tick = .1,
                        lambda_bar_size = .1, lambda_signed_tick = .1):
@@ -326,7 +261,6 @@ def tick_runs_bar(tick, initial_expected_bar_size, initial_buy_prob,
     bars.set_index('t', inplace=True)
     return bars
 
-
 def volume_runs_bar(tick, initial_expected_bar_size, initial_buy_prob, initial_buy_volume,
                     initial_sell_volume, lambda_bar_size=.1, lambda_buy_prob=.1,
                     lambda_buy_volume=.1, lambda_sell_volume=.1):
@@ -370,17 +304,20 @@ def volume_runs_bar(tick, initial_expected_bar_size, initial_buy_prob, initial_b
     bars.set_index('t', inplace=True)
     return bars
 
-def bband(data: pd.Series, window: int = 21, width: float = 0.005):
+def getBollingerRange(data: pd.Series, window: int = 21, width: float = 0.005):
     """
-    Bollinger Band를 구축합니다
+    Bollinger Band를 구축하는 Parameter를 return으로 하는 함수입니다
+    :param data: pandas.Series 형태의 price Data를 input으로 합니다
+    :param window: Rolling할 기간을 지정하는 Hyper Parameter입니다
+    :param width:
+    :return:
     """
-    avg = data.ewm(span=window).mean()
+    avg = data.ewm(span = window).mean()
     std0 = avg * width
     lower = avg - std0
     upper = avg + std0
 
     return avg, upper, lower, std0
-
 
 def pcaWeights(cov, riskDist = None, risktarget = 1.0, valid = False):
     """
@@ -406,7 +343,6 @@ def pcaWeights(cov, riskDist = None, risktarget = 1.0, valid = False):
         return (wghts, ctr)
     else:
         return wghts
-
 
 def cumsum_events(df: pd.Series, limit: float):
     """
@@ -510,7 +446,7 @@ def addVerticalBarrier(tEvents, close, numDays=1):
     return t1
 
 
-def TripleBarrier(close, events, ptSl, molecule):
+def getTripleBarrier(close, events, ptSl, molecule):
     """
     Triple Barrier Method를 구현하는 함수입니다
     Horizonal Barrier, Vertical Barrier 중 어느 하나라도 Touch를 하면 Labeling을 진행합니다
@@ -590,16 +526,15 @@ def getEvents(close, tEvents, ptSl, trgt, minRet, numThreads, t1=False, side=Non
     else:
         side_, ptSl_ = side.loc[side.index & trgt.index], ptSl[:2]
 
-    events = pd.concat({'t1': t1, 'trgt': trgt, 'side': side_}, axis=1).dropna(subset=['trgt'])
-    df0 = fmp.mpPandasObj(func=applyPtSlOnT1, pdObj=('molecule', events.index),
-                          numThreads=numThreads, close=close, events=events, ptSl=np.array(ptSl_))
-    events['t1'] = df0.dropna(how='all').min(axis=1)  # pd.min ignores nan
+    events = pd.concat({'t1': t1, 'trgt': trgt, 'side': side_}, axis = 1).dropna(subset = ['trgt'])
+    df0 = mpPandasObj(func = getTripleBarrier, pdObj=('molecule', events.index),
+                          numThreads = numThreads, close = close, events = events, ptSl = np.array(ptSl_))
+    events['t1'] = df0.dropna(how = 'all').min(axis = 1)  # pd.min ignores nan
 
     if side is None:
         events = events.drop('side', axis=1)
 
     return events
-
 
 def getBins(events, close):
     """
@@ -680,7 +615,6 @@ def getBinsNew(events, close, t1=None):
     if 'side' in events_: out.loc[out['ret'] <= 0, 'bin'] = 0  # meta-labeling
     return out
 
-
 def get_up_cross(df):
     """
     이익 실현 구간을 지정하는 함수입니다
@@ -689,7 +623,6 @@ def get_up_cross(df):
     crit2 = df.fast > df.slow
     return df.fast[(crit1) & (crit2)]
 
-
 def get_down_cross(df):
     """
     손실 한도 구간을 지정하는 함수입니다
@@ -697,6 +630,18 @@ def get_down_cross(df):
     crit1 = df.fast.shift(1) > df.slow.shift(1)
     crit2 = df.fast < df.slow
     return df.fast[(crit1) & (crit2)]
+
+def getUpCross(df, col):
+    # col is price column
+    crit1 = df[col].shift(1) < df.upper.shift(1)
+    crit2 = df[col] > df.upper
+    return df[col][(crit1) & (crit2)]
+
+def getDownCross(df, col):
+    # col is price column
+    crit1 = df[col].shift(1) > df.lower.shift(1)
+    crit2 = df[col] < df.lower
+    return df[col][(crit1) & (crit2)]
 
 # ===============================================================================================================
 #           Sample Weights
@@ -765,11 +710,11 @@ def mpSampleWeights(close, events, numThreads):
     out = events[['t1']].copy(deep=True)
     out['t1'] = out['t1'].fillna(close.index[-1])
     events['t1'] = events['t1'].fillna(close.index[-1])
-    numCoEvents = fmp.mpPandasObj(getConcurrentBar, ('molecule', events.index), numThreads, closeIdx=close.index,
+    numCoEvents = mpPandasObj(getConcurrentBar, ('molecule', events.index), numThreads, closeIdx=close.index,
                                   t1=out['t1'])
     numCoEvents = numCoEvents.loc[~numCoEvents.index.duplicated(keep='last')]
     numCoEvents = numCoEvents.reindex(close.index).fillna(0)
-    out['tW'] = fmp.mpPandasObj(getAvgLabelUniq, ('molecule', events.index), numThreads, t1=out['t1'],
+    out['tW'] = mpPandasObj(getAvgLabelUniq, ('molecule', events.index), numThreads, t1=out['t1'],
                                 numCoEvents = numCoEvents)
     return out
 
@@ -806,10 +751,10 @@ def getSampleWeights(close, events, numThreads):
     out = events[['t1']].copy(deep=True)
     out['t1'] = out['t1'].fillna(close.index[-1])
     events['t1'] = events['t1'].fillna(close.index[-1])
-    numCoEvents = fmp.mpPandasObj(getConcurrentBar, ('molecule', events.index), numThreads, closeIdx=close.index, t1=out['t1'])
+    numCoEvents = mpPandasObj(getConcurrentBar, ('molecule', events.index), numThreads, closeIdx=close.index, t1=out['t1'])
     numCoEvents = numCoEvents.loc[~numCoEvents.index.duplicated(keep='last')]
     numCoEvents = numCoEvents.reindex(close.index).fillna(0)
-    out['tW'] = fmp.mpPandasObj(mpSampleWeights, ('molecule', events.index), numThreads, t1=out['t1'], numCoEvents=numCoEvents)
+    out['tW'] = mpPandasObj(mpSampleWeights, ('molecule', events.index), numThreads, t1=out['t1'], numCoEvents=numCoEvents)
     return out
 
 
@@ -905,9 +850,9 @@ def mainMC(numObs = 10, numBars = 100, maxH = 5, numIters = 1E6, numThreads = 24
         job = {'func': auxMC, 'numObs': numObs, 'numBars': numBars, 'maxH': maxH}
         jobs.append(job)
     if numThreads == 1:
-        out = fmp.processJobs_(jobs)
+        out = processJobs_(jobs)
     else:
-        out = fmp.processJobs(jobs, numThreads = numThreads)
+        out = processJobs(jobs, numThreads = numThreads)
     print(pd.DataFrame(out).describe())
     return
 
@@ -930,30 +875,28 @@ def SampleW(close, events, numThreads):
     :param numThreads: constant, The no. of threads concurrently used by the function
     """
     out = events[['t1']].copy(deep=True)
-    numCoEvents = fmp.mpPandasObj(getConcurrentBar, ('molecule', events.index), numThreads, closeIdx=close.index,
+    numCoEvents = mpPandasObj(getConcurrentBar, ('molecule', events.index), numThreads, closeIdx=close.index,
                               t1=events['t1'])
     numCoEvents = numCoEvents.loc[~numCoEvents.index.duplicated(keep='last')]
     numCoEvents = numCoEvents.reindex(close.index).fillna(0)
-    out['w'] = fmp.mpPandasObj(mpSampleW, ('molecule', events.index), numThreads, t1=events['t1'], numCoEvents=numCoEvents,
+    out['w'] = mpPandasObj(mpSampleW, ('molecule', events.index), numThreads, t1=events['t1'], numCoEvents=numCoEvents,
                            close=close)
     out['w'] *= out.shape[0] / out['w'].sum()  # normalised, sum up to sample size
 
     return out
-
 
 def getConcurUniqueness(close, events, numThreads):
     out = events[['t1']].copy(deep = True)
     out['t1'] = out['t1'].fillna(close.index[-1])
     events['t1'] = events['t1'].fillna(close.index[-1])
-    numCoEvents = fmp.mpPandasObj(getConcurrentBar, ('molecule', events.index), numThreads, closeIdx = close.index, t1 = out['t1'])
+    numCoEvents = mpPandasObj(getConcurrentBar, ('molecule', events.index), numThreads, closeIdx = close.index, t1 = out['t1'])
     numCoEvents = numCoEvents.loc[~numCoEvents.index.duplicated(keep='last')]
     numCoEvents = numCoEvents.reindex(close.index).fillna(0)
-    out['tW'] = fmp.mpPandasObj(getAvgLabelUniq, ('molecule', events.index), numThreads, t1=out['t1'], numCoEvents = numCoEvents)
-    out['w'] = fmp.mpPandasObj(mpSampleW, ('molecule', events.index), numThreads, t1=events['t1'], numCoEvents = numCoEvents,
+    out['tW'] = mpPandasObj(getAvgLabelUniq, ('molecule', events.index), numThreads, t1=out['t1'], numCoEvents = numCoEvents)
+    out['w'] = mpPandasObj(mpSampleW, ('molecule', events.index), numThreads, t1=events['t1'], numCoEvents = numCoEvents,
                            close=close)
     out['w'] *= out.shape[0] / out['w'].sum()  # normalised, sum up to sample size
     return out
-
 
 def getTimeDecay(tW, clfLastW = 1.):
     """
@@ -992,24 +935,6 @@ def getWeights(d, size):
         w.append(w_)
     w = np.array(w[:: -1]).reshape(-1, 1)
     return w
-
-def plotWeights(dRange, nPlots, size):
-    """
-    Weight를 Plotting하는 함수입니다
-    :param dRange:
-    :param nPlots:
-    :param size:
-    :return:
-    """
-    w = pd.DataFrame()
-    for d in np.linspace(dRange[0], dRange[1], nPlots):
-        w_ = getWeights(d, size=size)
-        w_ = pd.DataFrame(w_, index=range(w_.shape[0])[:: -1], columns=[d])
-        w = w.join(w_, how='outer')
-    ax = w.plot()
-    ax.legend(loc='upper left')
-    plt.show()
-    return
 
 def fracDiff(series, d, thres = .01):
     """
@@ -1090,28 +1015,6 @@ def fracDiff_FFD(series, d, thres=1e-5):
     df = pd.concat(df, axis=1)
     return df
 
-def plotMinFFD():
-    """
-    adfuller test를 통과하는 최소의 d값을 찾습니다
-    :return:
-    """
-    from statsmodels.tsa.stattools import adfuller
-    path = './'
-    instName = 'ES1_Index_Method12'
-    out = pd.DataFrame(columns=['adfStat', 'pVal', 'lags', 'nObs', '95% conf', 'corr'])
-    df0 = pd.read_csv(path + instName + '.csv', index_col=0, parse_dates=True)
-    for d in np.linspace(0, 1, 11):
-        df1 = np.log(df0[['Close']]).resample('1D').last()  # downcast to daily obs
-        df2 = fracDiff_FFD(df1, d, thres=.01)
-        corr = np.corrcoef(df1.loc[df2.index, 'Close'], df2['Close'])[0, 1]
-        df2 = adfuller(df2['Close'], maxlag=1, regression='c', autolag=None)
-        out.loc[d] = list(df2[: 4]) + [df2[4]['5%']] + [corr]  # with critical value
-    out.to_csv(path + instName + '_testMinFFD.csv')
-    out[['adfStat', 'corr']].plot(secondary_y='adfStat')
-    plt.axhline(out['95% conf'].mean(), linewidth=1, color='r', linestyle='dotted')
-    plt.savefig(path + instName + '_testMinFFD.png')
-    return
-
 def getOptimalFFD(data, start = 0, end = 1, interval = 10, t = 1e-5):
     """
 
@@ -1123,7 +1026,7 @@ def getOptimalFFD(data, start = 0, end = 1, interval = 10, t = 1e-5):
     :return:
     """
     d = np.linspace(start, end, interval)
-    out = fmp.mpJobList(mpGetOptimalFFD, ('molecules', d), redux=pd.DataFrame.append, data=data)
+    out = mpJobList(mpGetOptimalFFD, ('molecules', d), redux=pd.DataFrame.append, data=data)
 
     return out
 
@@ -1147,3 +1050,470 @@ def OptimalFFD(data, start=0, end=1, interval=10, t=1e-5):
             return d
     print('no optimal d')
     return d
+
+# =================================================================================================================
+#           Cross Validation
+# =================================================================================================================
+def getTrainTimes(t1, testTimes):
+    """
+    Given testTimes, find the times of the training observations.
+    Purge from the training set all observations whose labels overlapped in time with those labels included in the testing set
+    :params t1: event timestamps
+        —t1.index: Time when the observation started.
+        —t1.value: Time when the observation ended.
+    :params testTimes: pd.series, Times of testing observations.
+    :return trn: pd.df, purged training set
+    """
+    # copy t1 to trn
+    trn = t1.copy(deep=True)
+    # for every times of testing obervation
+    for i, j in testTimes.iteritems():
+        # cond 1: train starts within test
+        df0 = trn[(i <= trn.index) & (trn.index <= j)].index
+        # cond 2: train ends within test
+        df1 = trn[(i <= trn) & (trn <= j)].index
+        # cond 3: train envelops test
+        df2 = trn[(trn.index <= i) & (j <= trn)].index
+        # drop the data that satisfy cond 1 & 2 & 3
+        trn = trn.drop(df0.union(df1).union(df2))
+    return trn
+
+
+def getEmbargoTimes(times, pctEmbargo):
+     """ Not sure if it works
+     # Get embargo time for each bar
+     :params times: time bars
+     :params pctEmbargo: float, % of the bars will be embargoed
+     :return trn: pd.df, purged training set
+     """
+     # cal no. of steps from the test data
+     step = int(times.shape[0] * pctEmbargo)
+     if step == 0:
+         # if no embargo, the same data set
+         mbrg=pd.Series(times,index=times)
+     else:
+         #
+         mbrg=pd.Series(times[step:],index=times[:-step])
+         mbrg=mbrg.append(pd.Series(times[-1],index=times[-step:]))
+     return mbrg
+
+class PurgedKFold(_BaseKFold):
+    """
+    K Fold Class를 확장하여 구간에 걸쳐 있는 레이블을 조정합니다.
+    Train Data Set에서 Test Label 구간과 중첩 상태에 있는 관측값을 제거합니다.
+    Test Set이 그 사이에 Train data의 Sample이 없이 연접해 있다고 가정합니다 (shuffle = False)
+    """
+    def __init__(self, n_splits=3, t1=None, pctEmbargo=0.):
+        if not isinstance(t1, pd.Series):
+            # if t1 is not a pd.series, raise error
+            raise ValueError('Label Through Dates must be a pd.Series')
+        # inherit _BaseKFold, no shuffle
+        # Might be python 2x style
+        super(PurgedKFold, self).__init__(n_splits, shuffle=False, random_state=None)
+        self.t1 = t1  # specify the vertical barrier
+        self.pctEmbargo = pctEmbargo  # specify the embargo parameter (% of the bars)
+
+    def split(self, X, y=None, groups=None):
+        """
+        :param X: the regressors, features
+        :param y: the regressands, labels
+        :param groups: None
+
+        : return
+            + train_indices: generator, the indices of training dataset
+            + test_indices: generator, the indices of the testing dataset
+        """
+        if (X.index == self.t1.index).sum() != len(self.t1):
+            # X's index does not match t1's index, raise error
+            raise ValueError('X and ThruDateValues must have the same index')
+        # create an array from 0 to (X.shape[0]-1)
+        indices = np.arange(X.shape[0])
+        # the size of the embargo
+        mbrg = int(X.shape[0] * self.pctEmbargo)
+        # list comprehension, find the (first date, the last date + 1) of each split
+        test_starts = [(i[0], i[-1] + 1) for i in np.array_split(np.arange(X.shape[0]), self.n_splits)]
+        for i, j in test_starts:  # for each split
+            t0 = self.t1.index[i]  # start of test set
+            test_indices = indices[i: j]  # test indices are all the indices from i to j
+            maxT1Idx = self.t1.index.searchsorted(
+                self.t1[test_indices].max())  # find the max(furthest) vertical barrier among the test dates
+            # index.searchsorted: find indices where element should be inserted (behind) to maintain the order
+            # find all t1.indices (the start dates of the event) when t1.value (end date) < t0
+            # i.e the left side of the training data
+            train_indices = self.t1.index.searchsorted(self.t1[self.t1 <= t0].index)
+            if maxT1Idx < X.shape[0]:  # right train (with embargo)
+                # indices[maxT1Idx+mbrg:]: the indices that is after the (maxTestDate + embargo period) [right training set]
+                # concat the left training indices and the right training indices
+                train_indices = np.concatenate((train_indices, indices[maxT1Idx + mbrg:]))
+        # the function return generators for the indices of training dataset and the indices of the testing dataset respectively
+        yield train_indices, test_indices
+
+def cvScore(clf, X, y, sample_weight, scoring='neg_log_loss', t1=None, cv=None, cvGen=None, pctEmbargo=0):
+    """
+    Address two sklearn bugs
+    1) Scoring functions do not know classes_
+    2) cross_val_score will give different results because it weights to the fit method, but not to the log_loss method
+
+    :params pctEmbargo: float, % of the bars will be embargoed
+    """
+    if scoring not in ['neg_log_loss', 'accuracy']:
+        # if not using 'neg_log_loss' or 'accuracy' to score, raise error
+        raise Exception('wrong scoring method.')
+    from sklearn.metrics import log_loss, accuracy_score  # import log_loss and accuracy_score
+    #   from clfSequential import PurgedKFold # the original code assume they are stored in different folder
+    if cvGen is None:  # if there is no predetermined splits of the test sets and the training sets
+        # use the PurgedKFold to generate splits of the test sets and the training sets
+        cvGen = PurgedKFold(n_splits=cv, t1=t1, pctEmbargo=pctEmbargo)  # purged
+    score = []  # store the CV scores
+    # for each fold
+    for train, test in cvGen.split(X=X):
+        # fit the model
+        fit = clf.fit(X=X.iloc[train, :], y=y.iloc[train], sample_weight=sample_weight.iloc[train].values)
+        if scoring == 'neg_log_loss':
+            prob = fit.predict_proba(X.iloc[test, :])  # predict the probabily
+            # neg log loss to evaluate the score
+            score_ = -1 * log_loss(y.iloc[test], prob, sample_weight=sample_weight.iloc[test].values,
+                                   labels=clf.classes_)
+        else:
+            pred = fit.predict(X.iloc[test, :])  # predict the label
+            # predict the accuracy score
+            score_ = accuracy_score(y.iloc[test], pred, sample_weight=sample_weight.iloc[test].values)
+        score.append(score_)
+    return np.array(score)
+
+# ===============================================================================================================
+#      Plot Chart
+# =================================================================================================================
+
+def plot_bar_counts(tick, volume, dollar):
+    """
+    Tick, Volume, Dollar Bard의 counting 횟수를 plotting하는 함수입니다
+    """
+    f, ax = plt.subplots(figsize=(15, 5))
+    tick.plot(ax=ax, ls='-', label='tick count')
+    volume.plot(ax=ax, ls='--', label='volume count')
+    dollar.plot(ax=ax, ls='-.', label='dollar count')
+    ax.set_title('Scaled Bar Counts')
+    ax.legend()
+    return
+
+def plot_hist(bar_types, bar_returns):
+    f, axes = plt.subplots(len(bar_types), figsize=(10, 6))
+    for i, (bar, typ) in enumerate(zip(bar_returns, bar_types)):
+        g = sns.distplot(bar, ax=axes[i], kde=False, label=typ)
+        g.set(yscale='log')
+        axes[i].legend()
+    plt.tight_layout()
+    return
+
+def plot_sample_data(ref, sub, bar_type, *args, **kwds):
+    """
+    Sampling된 Data를 Plotting합니다
+    """
+
+    f, axes = plt.subplots(3, sharex=True, sharey=True, figsize=(10, 7))
+    ref.plot(*args, **kwds, ax=axes[0], label='price')
+    sub.plot(*args, **kwds, ax=axes[0], marker='X', ls='', label=bar_type)
+    axes[0].legend()
+    ref.plot(*args, **kwds, ax=axes[1], marker='o', label='price')
+    sub.plot(*args, **kwds, ax=axes[2], marker='X', ls='',
+             color='r', label=bar_type)
+    for ax in axes[1:]: ax.legend()
+    plt.tight_layout()
+    return
+
+def plot_autocorr(bar_types, bar_returns):
+    f, axes = plt.subplots(len(bar_types), figsize=(10, 7))
+
+    for i, (bar, typ) in enumerate(zip(bar_returns, bar_types)):
+        sm.graphics.tsa.plot_acf(bar, lags=120, ax=axes[i],
+                                 alpha=0.05, unbiased=True, fft=True,
+                                 zero=False,
+                                 title=f'{typ} AutoCorr')
+    plt.tight_layout()
+    return
+
+def plotWeights(dRange, nPlots, size):
+    """
+    Weight를 Plotting하는 함수입니다
+    :param dRange:
+    :param nPlots:
+    :param size:
+    :return:
+    """
+    w = pd.DataFrame()
+    for d in np.linspace(dRange[0], dRange[1], nPlots):
+        w_ = getWeights(d, size=size)
+        w_ = pd.DataFrame(w_, index=range(w_.shape[0])[:: -1], columns=[d])
+        w = w.join(w_, how='outer')
+    ax = w.plot()
+    ax.legend(loc='upper left')
+    plt.show()
+    return
+
+def plotMinFFD():
+    """
+    adfuller test를 통과하는 최소의 d값을 찾습니다
+    :return:
+    """
+    from statsmodels.tsa.stattools import adfuller
+    path = './'
+    instName = 'ES1_Index_Method12'
+    out = pd.DataFrame(columns=['adfStat', 'pVal', 'lags', 'nObs', '95% conf', 'corr'])
+    df0 = pd.read_csv(path + instName + '.csv', index_col=0, parse_dates=True)
+    for d in np.linspace(0, 1, 11):
+        df1 = np.log(df0[['Close']]).resample('1D').last()  # downcast to daily obs
+        df2 = fracDiff_FFD(df1, d, thres=.01)
+        corr = np.corrcoef(df1.loc[df2.index, 'Close'], df2['Close'])[0, 1]
+        df2 = adfuller(df2['Close'], maxlag=1, regression='c', autolag=None)
+        out.loc[d] = list(df2[: 4]) + [df2[4]['5%']] + [corr]  # with critical value
+    out.to_csv(path + instName + '_testMinFFD.csv')
+    out[['adfStat', 'corr']].plot(secondary_y='adfStat')
+    plt.axhline(out['95% conf'].mean(), linewidth=1, color='r', linestyle='dotted')
+    plt.savefig(path + instName + '_testMinFFD.png')
+    return
+
+# =================================================================================================================
+#           Performance
+# =================================================================================================================
+
+def _pickle_method(method):
+    func_name = method.im_func.__name__
+    obj = method.im_self
+    cls = method.im_class
+    return _unpickle_method, (func_name, obj, cls)
+
+def _unpickle_method(func_name, obj, cls):
+    for cls in cls.mro():
+        try:
+            func = cls.__dict__[func_name]
+        except KeyError:
+            pass
+        else:
+            break
+    return func.__get__(obj, cls)
+
+copyreg.pickle(types.MethodType, _pickle_method, _unpickle_method)
+
+def linParts(numAtoms, numThreads):
+    # partition of atoms with a single loop
+    parts = np.linspace(0, numAtoms,
+                        min(numThreads, numAtoms) + 1)  # find the indices (may not int) of the partition parts
+    parts = np.ceil(parts).astype(int)  # ceil the float indices into int
+    return parts
+
+def nestedParts(numAtoms, numThreads, upperTriang=False):
+    # partition of atoms with an inner loop
+    parts = [0]
+    numThreads_ = min(numThreads, numAtoms)
+    for _ in range(numThreads_):
+        # find the appropriate size of each part by an algorithms
+        part = 1 + 4 * (parts[-1] ** 2 + parts[-1] + numAtoms * (numAtoms + 1.) / numThreads_)
+        part = (-1 + part ** .5) / 2.
+        # store part into parts
+        parts.append(part)
+    # rounded to the nearest natural number
+    parts = np.round(parts).astype(int)
+    if upperTriang:  # the first rows are heaviest
+        parts = np.cumsum(np.diff(parts)[::-1])
+        # dont forget the 0 at the begining
+        parts = np.append(np.array([0]), parts)
+    return parts
+
+def mpPandasObj(func, pdObj, numThreads = 24, mpBatches = 1, linMols = True, **kargs):
+    '''
+    Parallelize jobs, return a dataframe or series
+    :params func: function to be parallelized. Returns a DataFrame
+    :params pdObj: tuple,
+        + pdObj[0]: Name of argument used to pass the molecule
+        + pdObj[1]: List of atoms that will be grouped into molecules
+    :params numThreads: int, no. of threads that will be used in parallel (1 processor per thread)
+    :params mpBatches: int, no. of parallel batches (jobs per core)
+    :params linMols: bool, whether partitions will be linear or double-nested
+    :params kwds: any other argument needed by func
+
+    Example: df1=mpPandasObj(func,('molecule',df0.index),24,**kwds)
+    '''
+    import pandas as pd
+    # ----------------Partition the dataset-------------------------
+    # parts: the indices to separate
+    if linMols:
+        parts = linParts(len(pdObj[1]), numThreads * mpBatches)
+    else:
+        parts = nestedParts(len(pdObj[1]), numThreads * mpBatches)
+
+    jobs = []
+    for i in range(1, len(parts)):
+        # name of argument: molecule, function: func
+        job = {pdObj[0]: pdObj[1][parts[i - 1]:parts[i]], 'func': func}
+        job.update(kargs)  # update kargs?
+        jobs.append(job)
+    # -----------------multiprocessing--------------------
+    if numThreads == 1:
+        out = processJobs_(jobs)
+    else:
+        out = processJobs(jobs, numThreads=numThreads)
+    # ------------determine the datatype of the output----
+    try:
+        if len(out) == 0:
+            return pd.DataFrame()
+        elif isinstance(out[0], pd.DataFrame):
+            df0 = pd.DataFrame()
+        elif isinstance(out[0], pd.Series):
+            df0 = pd.Series()
+        else:
+            return out
+        # Append the output to the df0
+        for i in out:
+            df0 = df0.append(i)
+        # sort objects by labels
+        df0 = df0.sort_index()
+    except:
+        print(type(out))
+        df0 = pd.DataFrame()
+    return df0
+
+def processJobs_(jobs):
+    # Run jobs sequentially, for debugging or numThread = 1
+    out = []
+    for job in jobs:
+        out_ = expandCall(job)
+        out.append(out_)
+    return out
+
+def reportProgress(jobNum, numJobs, time0, task):
+    # Report progress as asynch jobs are completed
+    # keep us informed about the percentage of jobs completed
+    # msg[0]: % completed, msg[1]: time elapses
+    msg = [float(jobNum) / numJobs, (time.time() - time0) / 60.]
+    # msg[2]:minutes remaining
+    msg.append(msg[1] * (1 / msg[0] - 1))
+    # the current time
+    timeStamp = str(dt.datetime.fromtimestamp(time.time()))
+    # convert a list `msg` into a string `msg`
+    msg = timeStamp + ' ' + str(round(msg[0] * 100, 2)) + '% ' + task + ' done after ' + \
+          str(round(msg[1], 2)) + ' minutes. Remaining ' + str(round(msg[2], 2)) + ' minutes.'
+
+    if jobNum < numJobs:
+        sys.stderr.write(msg + '\r')  # pointer goes to the front?
+    else:
+        sys.stderr.write(msg + '\n')  # pointer goes to the next line
+    return
+
+def processJobs(jobs, task=None, numThreads=24):
+    # Run in parallel.
+    # jobs must contain a 'func' callback, for expandCall
+    if task is None:
+        task = jobs[0]['func'].__name__
+    pool = mp.Pool(processes=numThreads)  # i7 I cores..should delete 'numThreads' really
+    # 'map': map the function to the arguments/parameters
+    # 'pool.map': parallelise `expandCall`
+    # 'imap_unordered`: iterators, results will be yielded as soon as they are ready, regardless of the order of the input iterable
+    outputs = pool.imap_unordered(expandCall, jobs)  # 'imap_unordered` seems to use less memory than 'imap'
+    out = []
+    time0 = time.time()
+    # Process asyn output, report progress
+    # I guess the results are actually output here
+    for i, out_ in enumerate(outputs, 1):  # index start at 1
+        out.append(out_)
+        reportProgress(i, len(jobs), time0, task)
+    pool.close()  # close the pool, stop accepting new jobs
+    pool.join()  # this is needed to prevent memory leaks
+    return out
+
+def expandCall(kargs):
+    # Expand the arguments of a callback function, kargs['func']
+    # Unwrap the items(atoms) in the job(molecule) and execute the callback function
+    func = kargs['func']  # function
+    del kargs['func']  # delete the `function` column/argument
+    out = func(**kargs)  # put the arguments into the function
+    return out
+
+def processJobsRedux(jobs, task=None, cpus=4, redux=None, reduxArgs={}, reduxInPlace=False):
+    '''
+    Run in parallel
+    jobs must contain a ’func’ callback, for expandCall
+    redux prevents wasting memory by reducing output on the fly
+    :params redux: func, a callback to the function that carries out the reduction, e.g. pd.DataFrame.add
+    :params reduxArgs: dict, contains the keyword arguments that must be passed to the redux (if any)
+        e.g. if redux = 'od,DataFrame.join, reduxArg = {'how':'outer'}
+    :params reduxInPlace: bool, indicate whether the redux operation should happen in-place or not
+        e.g. redux = dict.update or redux = list.append requires reduxInplace = True
+            because updating a dictionary or appending a list is both in-place operations
+    '''
+
+    if task is None:  # get the name of the function/tasl
+        task = jobs[0]['func'].__name__
+    # 'map': map the function to the arguments/parameters
+    # 'pool.map': parallelise `expandCall`
+    # 'imap_unordered`: iterators, results will be yielded as soon as they are ready, regardless of the order of the input iterable
+    pool = mp.Pool(processes=cpus)
+    imap = pool.imap_unordered(expandCall, jobs)
+    out = None
+    time0 = time.time()
+    # Process asynchronous output, report progress
+    for i, out_ in enumerate(imap, 1):
+        if out is None:  # the first element
+            if redux is None:  # if the reduction function is not specified
+                out = [out_]
+                redux = list.append
+                reduxInPlace = True
+            else:
+                out = copy.deepcopy(out_)
+        else:  # not the first
+            if reduxInPlace:  # if inplace, no need to re-assign to out
+                redux(out, out_, **reduxArgs)
+            else:
+                out = redux(out, out_, **reduxArgs)
+        reportProgress(i, len(jobs), time0, task)
+    pool.close()  # close the pool, stop accepting new jobs
+    pool.join()  # this is needed to prevent memory leaks
+    if isinstance(out, (pd.Series, pd.DataFrame)):
+        out = out.sort_index()
+    return out
+
+def mpJobList(func, argList, numThreads, mpBatches = 1, linMols = True,
+              redux = None, reduxArgs = {}, reduxInPlace = False, **kargs):
+    '''
+    Parallelize jobs, return a dataframe or series
+    :params func: function to be parallelized. Returns a DataFrame
+    :params argList: tuple,
+        + argList[0]: Name of argument used to pass the molecule
+        + argList[1]: List of atoms that will be grouped into molecules
+    :params mpBatches: int, no. of parallel batches (jobs per core)
+    :params linMols: bool, whether partitions will be linear or double-nested
+    :params redux: func, a callback to the function that carries out the reduction, e.g. pd.DataFrame.add
+    :params reduxArgs: dict, contains the keyword arguments that must be passed to the redux (if any)
+        e.g. if redux = 'od,DataFrame.join, reduxArg = {'how':'outer'}
+    :params reduxInPlace: bool, indicate whether the redux operation should happen in-place or not
+        e.g. redux = dict.update or redux = list.append requires reduxInplace = True
+            because updating a dictionary or appending a list is both in-place operations
+
+    Example: df1=mpJobList(func,('molecule',df0.index),24)
+    '''
+
+    # ----------------Partition the dataset-------------------------
+    # parts: the indices to separate
+    if numThreads:
+        cpus = numThreads
+    else:
+        if platform.system() == 'Windows':
+            cpus = 1
+        else:
+            cpus = cpu_count() - 1
+
+    if linMols:
+        parts = linParts(len(argList[1]), cpus * mpBatches)
+    else:
+        parts = nestedParts(len(argList[1]), cpus * mpBatches)
+    jobs = []
+
+    for i in range(1, len(parts)):
+        job = {argList[0]: argList[1][parts[i - 1]: parts[i]], 'func': func}
+        job.update(kargs)
+        jobs.append(job)
+    # -----------------multiprocessing--------------------
+    out = processJobsRedux(jobs, redux=redux, reduxArgs=reduxArgs,
+                           reduxInPlace=reduxInPlace, cpus=cpus)
+    # no need to process an outputed list, save memory and time
+    return out
