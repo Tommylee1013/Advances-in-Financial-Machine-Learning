@@ -22,22 +22,6 @@ from dask import dataframe as dd
 from dask.diagnostics import ProgressBar
 
 import scipy.stats as stats
-import statsmodels.api as sm
-import statsmodels.tsa.stattools as tsa
-from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
-
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import roc_curve, classification_report
-from sklearn.metrics import log_loss, accuracy_score
-from itertools import product
-from sklearn import tree
-from sklearn.tree import DecisionTreeClassifier
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.ensemble import BaggingClassifier
-from sklearn.model_selection import GridSearchCV, RandomizedSearchCV
-from sklearn.pipeline import Pipeline
-from sklearn.model_selection._split import _BaseKFold
-
 import copyreg, types, multiprocessing as mp
 import copy
 import platform
@@ -50,6 +34,24 @@ import pyarrow.parquet as pq
 from tqdm import tqdm, tqdm_notebook
 
 import warnings
+
+#statsmodels
+import statsmodels.api as sm
+import statsmodels.tsa.stattools as tsa
+from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
+
+#sklearn
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import roc_curve, classification_report
+from sklearn.metrics import log_loss, accuracy_score
+from itertools import product
+from sklearn import tree
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import BaggingClassifier
+from sklearn.model_selection import GridSearchCV, RandomizedSearchCV
+from sklearn.pipeline import Pipeline
+from sklearn.model_selection._split import _BaseKFold
 
 warnings.filterwarnings("ignore")
 RANDOM_STATE = 42
@@ -75,8 +77,36 @@ def getDataFrame(df):
     temp.index = pd.to_datetime(temp.index)
     return temp
 
+@jit(nopython = True)
+def numba_isclose(a, b, rel_tol = 1e-09, abs_tol = 0.0):
+    # rel_tol: relative tolerance
+    # abs_tol: absolute tolerance
+    return np.fabs(a-b) <= np.fmax(rel_tol*np.fmax(np.fabs(a),np.fabs(b)),abs_tol)
+
+def getOHLC(ref, sub):
+    """
+    fn: get ohlc from custom
+
+    # args
+        ref: reference pandas series with all prices
+        sub: custom tick pandas series
+
+    # returns
+        tick_df: dataframe with ohlc values
+    """
+    ohlc = []
+    # for i in tqdm(range(sub.index.shape[0]-1)):
+    for i in range(sub.index.shape[0] - 1):
+        start, end = sub.index[i], sub.index[i + 1]
+        tmp_ref = ref.loc[start:end]
+        max_px, min_px = tmp_ref.max(), tmp_ref.min()
+        o, h, l, c = sub.iloc[i], max_px, min_px, sub.iloc[i + 1]
+        ohlc.append((end, start, o, h, l, c))
+    cols = ['end', 'start', 'open', 'high', 'low', 'close']
+    return (pd.DataFrame(ohlc, columns = cols))
+
 @jit(nopython=True)
-def mad_outlier(y, thresh = 3.):
+def madOutlier(y, thresh = 3.):
     """
     outlier를 탐지하는 함수입니다.
     :param y: pandas.Series 형태의 Price 계열 input data입니다
@@ -93,7 +123,7 @@ def mad_outlier(y, thresh = 3.):
     print(modified_z_score)
     return modified_z_score > thresh
 
-def bar_sampling(df, column, threshold, tick=False):
+def BarSampling(df, column, threshold, tick = False):
     """
     Argument
     ----------------------------
@@ -175,7 +205,7 @@ def scale(s):
     """
     return (s - s.min()) / (s.max() - s.min())
 
-def returns(s):
+def getReturns(s):
     arr = np.diff(np.log(s))
     return (pd.Series(arr, index=s.index[1:]))
 
@@ -237,7 +267,6 @@ def tick_imbalance_bar(tick, initial_expected_bar_size = 150, initial_expected_s
     bars.set_index('t', inplace=True)
 
     return bars
-
 
 def tick_runs_bar(tick, initial_expected_bar_size, initial_buy_prob,
                   lambda_bar_size=.1, lambda_buy_prob=.1):
@@ -313,6 +342,66 @@ def volume_runs_bar(tick, initial_expected_bar_size, initial_buy_prob, initial_b
     bars['t'] = groupby['t'].first()
     bars.set_index('t', inplace=True)
     return bars
+
+@jit(nopython=True)
+def getSequence(p0,p1,bs):
+    if numba_isclose((p1-p0),0.0,abs_tol=0.001):
+        return bs[-1]
+    else: return np.abs(p1-p0)/(p1-p0)
+
+@jit(nopython=True)
+def getImbalance(t):
+    """Noted that this function return a list start from the 2nd obs"""
+    bs = np.zeros_like(t)
+    for i in np.arange(1,bs.shape[0]):
+        bs[i-1] = getSequence(t[i-1],t[i],bs[:i-1])
+    return bs[:-1] # remove the last value
+
+def test_t_abs(absTheta, t, E_bs):
+    """
+    Bool function to test inequality
+    * row is assumed to come from df.itertuples()
+    - absTheta: float(), row.absTheta
+    - t: pd.Timestamp
+    - E_bs: float, row.E_bs
+    """
+    return (absTheta >= t * E_bs)
+
+def getAggImalanceBar(df):
+    """
+    Implements the accumulation logic
+    """
+    start = df.index[0]
+    bars = []
+    for row in df.itertuples():
+        t_abs = row.absTheta
+        rowIdx = row.Index
+        E_bs = row.E_bs
+
+        t = df.loc[start:rowIdx].shape[0]
+        if t < 1: t = 1  # if t less than 1, set equal to 1
+        if test_t_abs(t_abs, t, E_bs):
+            bars.append((start, rowIdx, t))
+            start = rowIdx
+    return bars
+
+def getRolledSeries(series, dictio):
+    gaps = rollGaps(series, dictio)
+    for field in ['Close', 'Volume']:
+        series[field] -= gaps
+    return series
+
+def rollGaps(series, dictio, matchEnd=True):
+    # Compute gaps at each roll, between previous close and next open
+    rollDates = series[dictio['Instrument']].drop_duplicates(keep='first').index
+    gaps = series[dictio['Close']] * 0
+    iloc = list(series.index)
+    iloc = [iloc.index(i) - 1 for i in rollDates] # index of days prior to roll
+    gaps.loc[rollDates[1:]] = series[dictio['Open']].loc[rollDates[1:]] - series[dictio['Close']].iloc[iloc[1:]].values
+    gaps = gaps.cumsum()
+    if matchEnd:
+        gaps -= gaps.iloc[-1]
+    return gaps
 
 def getBollingerRange(data: pd.Series, window: int = 21, width: float = 0.005):
     """
@@ -1586,7 +1675,7 @@ def plot_hist(bar_types, bar_returns):
     plt.tight_layout()
     return
 
-def plot_sample_data(ref, sub, bar_type, *args, **kwds):
+def plotSampleData(ref, sub, bar_type, *args, **kwds):
     """
     Sampling된 Data를 Plotting합니다
     """
