@@ -443,7 +443,7 @@ def pcaWeights(cov, riskDist = None, risktarget = 1.0, valid = False):
     else:
         return wghts
 
-def cumsum_events(df: pd.Series, limit: float):
+def CusumEvents(df: pd.Series, limit: float):
     """
     이벤트 기반의 표본 추출을 하는 함수입니다
     :param df: pandas.Series 형태의 가격 데이터입니다
@@ -495,36 +495,6 @@ def getDailyVolatility(close, span = 100):
     df0 = df0.ewm(span = span).std().rename('dailyVol')
     return df0
 
-
-def getTEvents(gRaw, h):
-    """
-    대칭 CUSUM filter를 적용하는 함수입니다
-
-    Argument
-    ----------------------------
-    gRaw : price 계열의 pandas.Series 객체을 input으로 받습니다
-    h : Volatility를 기반으로한 Horizonal Barrier를 설정하는 Argument 입니다
-    """
-    tEvents, sPos, sNeg = [], 0, 0
-    diff = np.log(gRaw).diff().dropna()
-    for i in tqdm(diff.index[1:]):
-        try:
-            pos, neg = float(sPos + diff.loc[i]), float(sNeg + diff.loc[i])
-        except Exception as e:
-            print(e)
-            print(sPos + diff.loc[i], type(sPos + diff.loc[i]))
-            print(sNeg + diff.loc[i], type(sNeg + diff.loc[i]))
-            break
-        sPos, sNeg = max(0., pos), min(0., neg)
-        if sNeg < - h:
-            sNeg = 0;
-            tEvents.append(i)
-        elif sPos > h:
-            sPos = 0;
-            tEvents.append(i)
-    return pd.DatetimeIndex(tEvents)
-
-
 def addVerticalBarrier(tEvents, close, numDays=1):
     """
     Position Holding 기간을 지정하여 Vertical Barrier를 구축합니다
@@ -544,6 +514,75 @@ def addVerticalBarrier(tEvents, close, numDays=1):
     t1 = (pd.Series(close.index[t1], index=tEvents[:t1.shape[0]]))
     return t1
 
+
+def tradableHour(i, start='09:40', end='15:50'):
+    """
+    : param i: a datetimeIndex value
+    : param start: the start of the trading hour
+    : param end: the end of the trading hour
+
+    : return: bool, is tradable hour or not"""
+    time = i.strftime('%H:%M')
+    return (time < end and time > start)
+
+def getTEvents(gRaw, h, symmetric=True, isReturn=False):
+    """
+    Symmetric CUSUM Filter
+    Sample a bar t iff S_t >= h at which point S_t is reset
+    Multiple events are not triggered by gRaw hovering around a threshold level
+    It will require a full run of length h for gRaw to trigger an event
+
+    Two arguments:
+        gRaw: the raw time series we wish to filter (gRaw), e.g. return
+        h: threshold
+
+    Return:
+        pd.DatatimeIndex.append(tEvents):
+    """
+    tEvents = []
+    if isReturn:
+        diff = gRaw
+    else:
+        diff = gRaw.diff()
+    if symmetric:
+        sPos, sNeg = 0, 0
+        if np.shape(h) == ():
+
+            for i in diff.index[1:]:
+                sPos, sNeg = max(0, sPos + diff.loc[i]), min(0, sNeg + diff.loc[i])
+                if sNeg < -h and tradableHour(i):
+                    sNeg = 0;
+                    tEvents.append(i)
+                elif sPos > h and tradableHour(i):
+                    sPos = 0;
+                    tEvents.append(i)
+        else:
+            for i in diff.index[1:]:
+                sPos, sNeg = max(0, sPos + diff.loc[i]), min(0, sNeg + diff.loc[i])
+                if sNeg < -h[i] and tradableHour(i):
+                    sNeg = 0;
+                    tEvents.append(i)
+                elif sPos > h[i] and tradableHour(i):
+                    sPos = 0;
+                    tEvents.append(i)
+    else:
+        sAbs = 0
+        if np.shape(h) == ():
+
+            for i in diff.index[1:]:
+                sAbs = sAbs + diff.loc[i]
+                if sAbs > h and tradableHour(i):
+                    sAbs = 0;
+                    tEvents.append(i)
+
+        else:
+            for i in diff.index[1:]:
+                sAbs = sAbs + diff.loc[i]
+                if sAbs > h[i] and tradableHour(i):
+                    sAbs = 0;
+                    tEvents.append(i)
+
+    return pd.DatetimeIndex(tEvents)
 
 def getTripleBarrier(close, events, ptSl, molecule):
     """
@@ -600,7 +639,7 @@ def getEvents(close, tEvents, ptSl, trgt, minRet, numThreads, t1=False, side=Non
     close : Price 정보가 담겨 있는 pandas.Series 계열의 데이터를 input으로 넣습니다
     tEvents : 각 Triple Barrier Seed가 될 Time Stamp값을 가진 Pandas TimeIndex입니다
     ptSl : 음이 아는 두 실수값의 리스트로, 두 Barrier의 너비를 설정합니다
-    trgt : 수익률의 절대값으로 표현한 목표 pandas.Series 객체의 데이터를 input으로 합니다
+    trgt : 수익률의 절대값으로 표현한 목표 pandas.Series 객체의 데이터를 input으로 합니다향
     minRet : Triple Barrier 검색을 진행할 때 필요한 최소 목표 수익률입니다
     numThreads : 함수에서 현재 동시에 사용하고 있는 Thread의 수입니다
 
@@ -666,17 +705,16 @@ def getBins(events, close):
     return out
 
 
-def dropLabels(events, minPct = 0.05):
+def dropLabels(events, minPct=0.05):
     # 예제가 부족할 경우 가중치를 적용해 레이블을 제거한다.
-    for i in range(100):
+    while True:
         df0 = events['bin'].value_counts(normalize=True)
-
-        if df0.min() > minPct or df0.shape[0] < 3: break
-
-        print('dropped label', df0.argmin(), df0.min())
-        events = events[events['bin'] != df0.argmin()]
-
+        if df0.min() > minPct or df0.shape[0] < 3:
+            break
+        print('dropped label', df0.idxmin(), df0.min())
+        events = events[events['bin'] != df0.idxmin()]
     return events
+
 
 
 def getBinsNew(events, close, t1=None):
