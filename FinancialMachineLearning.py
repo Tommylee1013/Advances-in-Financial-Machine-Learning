@@ -902,7 +902,7 @@ def getIndMatrix(barIx, t1):
     :param t1: pandas.Series 형태의 Vertical Barrier의 timestamps를 input으로 합니다 (index: eventStart, value: eventEnd)
     :return indM: binary matrix, 각 관측치의 Label에 price Bar가 미치는 영향을 보여줍니다
     """
-    indM = pd.DataFrame(0, index=barIx, columns=range(t1.shape[0]))
+    indM = pd.DataFrame(0, index = barIx, columns=range(t1.shape[0]))
     for i, (t0, t1) in enumerate(t1.iteritems()):  # signal = obs
         indM.loc[t0: t1, i] = 1.  # each obs each column, you can see how many bars are related to an obs/
     return indM
