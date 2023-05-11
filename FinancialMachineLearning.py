@@ -1305,7 +1305,8 @@ def cvScore(clf, X, y, sample_weight, scoring='neg_log_loss', t1=None, cv=None, 
     # for each fold
     for train, test in cvGen.split(X=X):
         # fit the model
-        fit = clf.fit(X=X.iloc[train, :], y=y.iloc[train], sample_weight=sample_weight.iloc[train].values)
+        fit = clf.fit(X = pd.DataFrame(X).iloc[:,1:].iloc[train, :], y = pd.DataFrame(y).iloc[train],
+                      sample_weight = pd.DataFrame(sample_weight).values.reshape(1,-1)[0])
         if scoring == 'neg_log_loss':
             prob = fit.predict_proba(X.iloc[test, :])  # predict the probabily
             # neg log loss to evaluate the score
