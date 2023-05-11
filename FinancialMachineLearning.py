@@ -1306,16 +1306,18 @@ def cvScore(clf, X, y, sample_weight, scoring='neg_log_loss', t1=None, cv=None, 
     for train, test in cvGen.split(X=X):
         # fit the model
         fit = clf.fit(X = pd.DataFrame(X).iloc[:,1:].iloc[train, :], y = pd.DataFrame(y).iloc[train],
-                      sample_weight = pd.DataFrame(sample_weight).values.reshape(1,-1)[0])
+                      sample_weight = pd.DataFrame(sample_weight).iloc[train].values.reshape(1,-1)[0])
         if scoring == 'neg_log_loss':
-            prob = fit.predict_proba(X.iloc[test, :])  # predict the probabily
+            prob = fit.predict_proba(pd.DataFrame(X).iloc[:,1:].iloc[test, :])  # predict the probabily
             # neg log loss to evaluate the score
-            score_ = -1 * log_loss(y.iloc[test], prob, sample_weight=sample_weight.iloc[test].values,
+            score_ = -1 * log_loss(pd.DataFrame(y).iloc[test], prob,
+                                   sample_weight = pd.DataFrame(sample_weight).iloc[test].values.reshape(1,-1)[0],
                                    labels=clf.classes_)
         else:
-            pred = fit.predict(X.iloc[test, :])  # predict the label
+            pred = fit.predict(pd.DataFrame(X).iloc[:,1:].iloc[test, :])  # predict the label
             # predict the accuracy score
-            score_ = accuracy_score(y.iloc[test], pred, sample_weight=sample_weight.iloc[test].values)
+            score_ = accuracy_score(pd.DataFrame(y).iloc[test], pred,
+                                    sample_weight = pd.DataFrame(sample_weight).iloc[test].values)
         score.append(score_)
     return np.array(score)
 
