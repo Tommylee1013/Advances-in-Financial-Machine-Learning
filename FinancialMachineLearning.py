@@ -22,6 +22,8 @@ from dask import dataframe as dd
 from dask.diagnostics import ProgressBar
 
 import scipy.stats as stats
+from scipy import interp
+
 import copyreg, types, multiprocessing as mp
 import copy
 import platform
@@ -52,6 +54,7 @@ from sklearn.ensemble import BaggingClassifier
 from sklearn.model_selection import GridSearchCV, RandomizedSearchCV
 from sklearn.pipeline import Pipeline
 from sklearn.model_selection._split import _BaseKFold
+from sklearn import metrics
 
 warnings.filterwarnings("ignore")
 RANDOM_STATE = 42
@@ -1320,6 +1323,58 @@ def cvScore(clf, X, y, sample_weight, scoring='neg_log_loss', t1=None, cv=None, 
                                     sample_weight = pd.DataFrame(sample_weight).iloc[test].values)
         score.append(score_)
     return np.array(score)
+
+def crossValPlot(skf,classifier,X_,y_):
+    """Code adapted from:
+
+    """
+
+    X = pd.DataFrame(X_).iloc[:,1:]
+    X = np.asarray(X)
+    y = np.asarray(y_)
+
+    tprs = []
+    aucs = []
+    mean_fpr = np.linspace(0, 1, 100)
+
+    f,ax = plt.subplots(figsize=(10,7))
+    i = 0
+    for train, test in skf.split(X, y):
+        probas_ = classifier.fit(X[train], y[train]).predict_proba(X[test])
+        # Compute ROC curve and area the curve
+        fpr, tpr, thresholds = metrics.roc_curve(y[test], probas_[:, 1])
+        tprs.append(interp(mean_fpr, fpr, tpr))
+        tprs[-1][0] = 0.0
+        roc_auc = metrics.auc(fpr, tpr)
+        aucs.append(roc_auc)
+        ax.plot(fpr, tpr, lw=1, alpha=0.3,
+                 label='ROC fold %d (AUC = %0.2f)' % (i, roc_auc))
+
+        i += 1
+
+    ax.plot([0, 1], [0, 1], linestyle='--', lw=2, color='r',
+             label='Luck', alpha=.8)
+
+    mean_tpr = np.mean(tprs, axis=0)
+    mean_tpr[-1] = 1.0
+    mean_auc = metrics.auc(mean_fpr, mean_tpr)
+    std_auc = np.std(aucs)
+    ax.plot(mean_fpr, mean_tpr, color='b',
+             label=r'Mean ROC (AUC = %0.2f $\pm$ %0.2f)' % (mean_auc, std_auc),
+             lw=2, alpha=.8)
+
+    std_tpr = np.std(tprs, axis=0)
+    tprs_upper = np.minimum(mean_tpr + std_tpr, 1)
+    tprs_lower = np.maximum(mean_tpr - std_tpr, 0)
+    ax.fill_between(mean_fpr, tprs_lower, tprs_upper, color='grey', alpha=.2,
+                     label=r'$\pm$ 1 std. dev.')
+
+    ax.set_xlim([-0.05, 1.05])
+    ax.set_ylim([-0.05, 1.05])
+    ax.set_xlabel('False Positive Rate')
+    ax.set_ylabel('True Positive Rate')
+    ax.set_title('Receiver operating characteristic example')
+    ax.legend(bbox_to_anchor=(1,1))
 
 # =================================================================================================================
 #      Feature Importance
