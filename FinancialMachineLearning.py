@@ -1260,7 +1260,7 @@ class PurgedKFold(_BaseKFold):
             + train_indices: generator, the indices of training dataset
             + test_indices: generator, the indices of the testing dataset
         """
-        if (X.index == self.t1.index).sum() != len(self.t1):
+        if (pd.DataFrame(X)[0] == self.t1.index).sum() != len(self.t1):
             # X's index does not match t1's index, raise error
             raise ValueError('X and ThruDateValues must have the same index')
         # create an array from 0 to (X.shape[0]-1)
