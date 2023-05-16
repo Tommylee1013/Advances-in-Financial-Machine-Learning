@@ -1300,7 +1300,6 @@ def cvScore(clf, X, y, sample_weight, scoring='neg_log_loss', t1=None, cv=None, 
         # if not using 'neg_log_loss' or 'accuracy' to score, raise error
         raise Exception('wrong scoring method.')
     from sklearn.metrics import log_loss, accuracy_score  # import log_loss and accuracy_score
-    #   from clfSequential import PurgedKFold # the original code assume they are stored in different folder
     if cvGen is None:  # if there is no predetermined splits of the test sets and the training sets
         # use the PurgedKFold to generate splits of the test sets and the training sets
         cvGen = PurgedKFold(n_splits=cv, t1=t1, pctEmbargo=pctEmbargo)  # purged
