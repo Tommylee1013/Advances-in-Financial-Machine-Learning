@@ -1263,7 +1263,7 @@ class PurgedKFold(_BaseKFold):
             + train_indices: generator, the indices of training dataset
             + test_indices: generator, the indices of the testing dataset
         """
-        if (pd.DataFrame(X)[0] == self.t1.index).sum() != len(self.t1):
+        if (pd.DataFrame(X).index == self.t1.index).sum() != len(self.t1):
             # X's index does not match t1's index, raise error
             raise ValueError('X and ThruDateValues must have the same index')
         # create an array from 0 to (X.shape[0]-1)
@@ -1305,21 +1305,21 @@ def cvScore(clf, X, y, sample_weight, scoring='neg_log_loss', t1=None, cv=None, 
         cvGen = PurgedKFold(n_splits=cv, t1=t1, pctEmbargo=pctEmbargo)  # purged
     score = []  # store the CV scores
     # for each fold
-    for train, test in cvGen.split(X=X):
+    for train, test in cvGen.split(X = X):
         # fit the model
-        fit = clf.fit(X = pd.DataFrame(X).iloc[:,1:].iloc[train, :], y = pd.DataFrame(y).iloc[train],
+        fit = clf.fit(X = pd.DataFrame(X).iloc[train, :], y = pd.DataFrame(y).iloc[train],
                       sample_weight = pd.DataFrame(sample_weight).iloc[train].values.reshape(1,-1)[0])
         if scoring == 'neg_log_loss':
-            prob = fit.predict_proba(pd.DataFrame(X).iloc[:,1:].iloc[test, :])  # predict the probabily
+            prob = fit.predict_proba(pd.DataFrame(X).iloc[test, :])  # predict the probabily
             # neg log loss to evaluate the score
             score_ = -1 * log_loss(pd.DataFrame(y).iloc[test], prob,
                                    sample_weight = pd.DataFrame(sample_weight).iloc[test].values.reshape(1,-1)[0],
                                    labels=clf.classes_)
         else:
-            pred = fit.predict(pd.DataFrame(X).iloc[:,1:].iloc[test, :])  # predict the label
+            pred = fit.predict(pd.DataFrame(X).iloc[test, :])  # predict the label
             # predict the accuracy score
             score_ = accuracy_score(pd.DataFrame(y).iloc[test], pred,
-                                    sample_weight = pd.DataFrame(sample_weight).iloc[test].values)
+                                    sample_weight = pd.DataFrame(sample_weight).iloc[test].values.reshape(1, -1)[0])
         score.append(score_)
     return np.array(score)
 
@@ -1328,7 +1328,7 @@ def crossValPlot(skf,classifier,X_,y_):
 
     """
 
-    X = pd.DataFrame(X_).iloc[:,1:]
+    X = pd.DataFrame(X_)
     X = np.asarray(X)
     y = np.asarray(y_)
 
@@ -1556,7 +1556,8 @@ def getTestData(n_features=40, n_informative=10, n_redundant=10, n_samples=10000
     trnsX, cont = make_classification(n_samples=n_samples, n_features=n_features, n_informative=n_informative,
                                       n_redundant=n_redundant, random_state=0, shuffle=False)
     # n_samples days, freq = Business days, end by today
-    df0 = pd.DatetimeIndex(periods=n_samples, freq=pd.tseries.offsets.BDay(), end=pd.datetime.today())
+    df0 = pd.to_datetime(pd.date_range(end = pd.Timestamp.today(), periods = n_samples, freq = 'B').date)
+    #df0 = pd.date_range(periods = n_samples, freq = pd.tseries.offsets.BDay(), end = pd.datetime.today())
     # transform trnsX and cont into pd.df, cont.column.name = "bins"
     trnsX, cont = pd.DataFrame(trnsX, index=df0), pd.Series(cont, index=df0).to_frame('bin')
     # first n_informative are informative features, after that, first (n_redundant) are redundant features
