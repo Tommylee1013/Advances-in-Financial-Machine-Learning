@@ -1592,19 +1592,19 @@ def featImportance(trnsX, cont,
     oob = fit.oob_score_
     if method == 'MDI':  # MDI
         # MDI feature importance
-        imp = featImpMDI(fit, featNames=trnsX.columns)
+        imp = featImpMDI(fit, featNames = trnsX.columns)
         # oos = CV
-        oos = cvScore(clf, X=trnsX, y=cont['bin'], cv=cv, sample_weight=cont['w'], t1=cont['t1'], pctEmbargo=pctEmbargo,
+        oos = cvScore(clf, X = trnsX, y=cont['bin'], cv=cv, sample_weight=cont['w'], t1=cont['t1'], pctEmbargo=pctEmbargo,
                       scoring=scoring).mean()
     elif method == 'MDA':  # MDA
         # MDA feature importance and oos
-        imp, oos = featImpMDA(clf, X=trnsX, y=cont['bin'], cv=cv, sample_weight=cont['w'], t1=cont['t1'],
+        imp, oos = featImpMDA(clf, X = trnsX, y=cont['bin'], cv=cv, sample_weight=cont['w'], t1=cont['t1'],
                               pctEmbargo=pctEmbargo, scoring=scoring)
     elif method == 'SFI':  # SFI
         # CV
-        cvGen = PurgedKFold(n_splits=cv, t1=cont['t1'], pctEmbargo=pctEmbargo)
+        cvGen = PurgedKFold(n_splits = cv, t1 = cont['t1'], pctEmbargo = pctEmbargo)
         # oos score
-        oos = cvScore(clf, X=trnsX, y=cont['bin'], sample_weight=cont['w'], scoring=scoring, cvGen=cvGen).mean()
+        oos = cvScore(clf, X = trnsX, y=cont['bin'], sample_weight=cont['w'], scoring=scoring, cvGen=cvGen).mean()
         clf.n_jobs = 1  # paralellize auxFeatImpSFI rather than clf
         # find the SFI imp
         imp = mpPandasObj(auxFeatImpSFI, ('featNames', trnsX.columns), numThreads, clf=clf, trnsX=trnsX, cont=cont,
