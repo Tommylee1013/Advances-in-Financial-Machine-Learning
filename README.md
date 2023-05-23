@@ -12,6 +12,7 @@ Marcos Lopez De Prado의 Advances in Financial Machine Learning을 참조하여 
 `BarSampling` 함수를 사용해 간편하게 Sampling이 가능합니다
 
 ```angular2html
+import FinancialMachineLearning as fml
 dollar_df = fml.BarSampling(df, 'dv', dollar_M)
 ```
 
