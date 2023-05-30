@@ -346,6 +346,50 @@ def volume_runs_bar(tick, initial_expected_bar_size, initial_buy_prob, initial_b
     bars.set_index('t', inplace=True)
     return bars
 
+def getRunBars(tick, initial_expected_bar_size, initial_buy_prob, initial_buy_volume, initial_sell_volume,
+               ticker = 'volume', lambda_bar_size=.1, lambda_buy_prob=.1, lambda_buy_volume=.1, lambda_sell_volume=.1):
+    tick = tick.sort_index(ascending=True)
+    tick = tick.reset_index()
+    _signed_tick = signed_tick(tick)
+    _signed_volume = _signed_tick * tick[ticker]
+    imbalance_tick_buy = _signed_tick.apply(lambda v: v if v > 0 else 0).cumsum()
+    imbalance_volume_buy = _signed_volume.apply(lambda v: v if v > 0 else 0).cumsum()
+    imbalance_volume_sell = _signed_volume.apply(lambda v: v if -v < 0 else 0).cumsum()
+
+    group = []
+
+    expected_bar_size = initial_expected_bar_size
+    buy_prob = initial_buy_prob
+    buy_volume = initial_buy_volume
+    sell_volume = initial_sell_volume
+    expected_runs = expected_bar_size * max(buy_prob * buy_volume, (1 - buy_prob) * sell_volume)
+
+    current_group = 1
+    previous_i = 0
+    for i in range(len(tick)):
+        group.append(current_group)
+
+        if max(imbalance_volume_buy[i], imbalance_volume_sell[i]) >= expected_runs:
+            expected_bar_size = (lambda_bar_size * (i - previous_i + 1) + (1 - lambda_bar_size) * expected_bar_size)
+            buy_prob = (lambda_buy_prob * imbalance_tick_buy[i] /
+                        (i - previous_i + 1) + (1 - lambda_buy_prob) * buy_prob)
+            buy_volume = (lambda_buy_volume * imbalance_volume_buy[i] + (1 - lambda_buy_volume) * buy_volume)
+            sell_volume = (lambda_sell_volume * imbalance_volume_sell[i] + (1 - lambda_sell_volume) * sell_volume)
+            previous_i = i
+            imbalance_tick_buy -= imbalance_tick_buy[i]
+            imbalance_volume_buy -= imbalance_volume_buy[i]
+            imbalance_volume_sell -= imbalance_volume_sell[i]
+            current_group += 1
+    tick['group'] = group
+    groupby = tick.groupby('group')
+    bars = groupby['price'].ohlc()
+    bars[ticker] = groupby[ticker].sum()
+    bars['value'] = groupby['value'].sum()
+    #bars[['volume', 'value']] = groupby[['volume', 'value']].sum()
+    bars['t'] = groupby['t'].first()
+    bars.set_index('t', inplace=True)
+    return bars
+
 @jit(nopython=True)
 def getSequence(p0,p1,bs):
     if numba_isclose((p1-p0),0.0,abs_tol=0.001):
