@@ -1883,7 +1883,7 @@ def get_signal(events: pd.DataFrame, stepSize: float, prob: pd.Series, pred: pd.
     return signal1
 
 
-def bet_size(x: float, w: float) -> float:
+def betSize(x: float, w: float) -> float:
     '''
     Returns bet size given price divergence and sigmoid function coefficient.
 
@@ -1897,7 +1897,7 @@ def bet_size(x: float, w: float) -> float:
     return x * (w + x ** 2) ** (-0.5)
 
 
-def get_target_pos(w: float, f: float, mP: float, maxPos: float) -> float:
+def getTargetPos(w: float, f: float, mP: float, maxPos: float) -> float:
     '''
     Calculates target position size associated with forecast f.
 
@@ -1913,7 +1913,7 @@ def get_target_pos(w: float, f: float, mP: float, maxPos: float) -> float:
     return int(bet_size(w, f - mP) * maxPos)
 
 
-def inv_price(f: float, w: float, m: float) -> float:
+def invPrice(f: float, w: float, m: float) -> float:
     '''
     Calculates inverse function of bet size with respect to market price p_t.
 
@@ -1928,7 +1928,7 @@ def inv_price(f: float, w: float, m: float) -> float:
     return f - m * (w / (1 - m ** 2)) ** 0.5
 
 
-def limit_price(tPos: float, pos: float, f: float, w: float, maxPos: float) -> float:
+def limitPrice(tPos: float, pos: float, f: float, w: float, maxPos: float) -> float:
     '''
     Calculates breakeven limit price p̄ for the order size q̂_{i,t} − q_t to avoid realizing losses.
 
@@ -1950,7 +1950,7 @@ def limit_price(tPos: float, pos: float, f: float, w: float, maxPos: float) -> f
     return lP
 
 
-def get_w(x: float, m: float):
+def getW(x: float, m: float):
     '''
     Calibrates sigmoid coefficient by calculating the inverse function of bet size with respect to w.
 
@@ -1961,7 +1961,7 @@ def get_w(x: float, m: float):
     return x ** 2 * (m ** (-2) - 1)
 
 
-def get_num_conc_bets_by_date(date, signals):
+def get_num_conc_bets_by_date(date, signals, freq = 'B'):
     '''
     Derives number of long and short concurrent bets by given date.
 
@@ -1973,7 +1973,7 @@ def get_num_conc_bets_by_date(date, signals):
             long, short (Tuple[int, int]): number of long and short concurrent bets
     '''
     long, short = 0, 0
-    for ind in pd.date_range(start = max(signals.index[0], date - timedelta(days=25)), end=date):
+    for ind in pd.date_range(start = max(signals.index[0], date - timedelta(days = 25)), end = date, freq = freq):
         if ind <= date and signals.loc[ind]['t1'] >= date:
             if signals.loc[ind]['signal'] >= 0:
                 long += 1
