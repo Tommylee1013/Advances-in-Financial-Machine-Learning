@@ -16,6 +16,7 @@ from collections import OrderedDict as od
 import math
 import sys
 import datetime as dt
+from datetime import timedelta
 
 from pathlib import PurePath, Path
 from dask import dataframe as dd
@@ -23,6 +24,7 @@ from dask.diagnostics import ProgressBar
 
 import scipy.stats as stats
 from scipy import interp
+from scipy.stats import rv_continuous, kstest, norm
 
 import copyreg, types, multiprocessing as mp
 import copy
@@ -1191,7 +1193,7 @@ def fracDiff_FFD(series, d, thres=1e-5):
             if not np.isfinite(series.loc[loc1, name]):
                 continue  # exclude NAs
             # try: # the (iloc)^th obs will use all the weights from the start to the (iloc)^th
-            df_[loc1] = np.dot(w.T, seriesF.loc[loc0: loc1])[0, 0]
+            df_.loc[loc1] = np.dot(w.T, seriesF.loc[loc0: loc1])[0, 0]
             # except:
             #     continue
 
@@ -1789,6 +1791,195 @@ class logUniform_gen(rv_continuous):
     def _cdf(self,x):
         return np.log(x/self.a)/np.log(self.b/self.a)
 def logUniform(a = 1,b = np.exp(1)) : return logUniform_gen(a = a,b = b,name = 'logUniform')
+
+# =================================================================================================================
+#      Hyper Parameter Tuning
+# =================================================================================================================
+
+def avg_active_signals_(signals: pd.DataFrame, molecule: np.ndarray):
+    '''
+    Auxilary function for averaging signals. At time loc, averages signal among those still active.
+    Signal is active if:
+        a) issued before or at loc AND
+        b) loc before signal's endtime, or endtime is still unknown (NaT).
+
+        Parameters:
+            signals (pd.DataFrame): dataset with signals and t1
+            molecule (np.ndarray): dates of events on which weights are computed
+
+        Returns:
+            out (pd.Series): series with average signals for each timestamp
+    '''
+    out = pd.Series()
+    for loc in molecule:
+        df0 = (signals.index.values <= loc) & ((loc < signals['t1']) | pd.isnull(signals['t1']))
+        act = signals[df0].index
+        if len(act) > 0:
+            out[loc] = signals.loc[act, 'signal'].mean()
+        else:
+            out[loc] = 0  # no signals active at this time
+    return out
+
+
+def avg_active_signals(signals: pd.DataFrame):
+    '''
+    Computes the average signal among those active.
+
+        Parameters:
+            signals (pd.DataFrame): dataset with signals and t1
+
+        Returns:
+            out (pd.Series): series with average signals for each timestamp
+    '''
+    tPnts = set(signals['t1'].dropna().values)
+    tPnts = tPnts.union(signals.index.values)
+    tPnts = sorted(list(tPnts))
+    out = avg_active_signals_(signals=signals, molecule=tPnts)
+    return out
+
+def discrete_signal(signal0: pd.Series, stepSize: float):
+    '''
+    Discretizes signals.
+
+        Parameters:
+            signal0 (pd.Series): series with signals
+            stepSize (float): degree of discretization (must be in (0, 1])
+
+        Returns:
+            signal1 (pd.Series): series with discretized signals
+    '''
+    signal1 = (signal0 / stepSize).round() * stepSize  # discretize
+    signal1[signal1 > 1] = 1  # cap
+    signal1[signal1 < -1] = -1  # floor
+    return signal1
+
+
+def get_signal(events: pd.DataFrame, stepSize: float, prob: pd.Series, pred: pd.Series, numClasses: int, **kargs):
+    '''
+    Gets signals from predictions. Includes averaging of active bets as well as discretizing final value.
+
+        Parameters:
+            events (pd.DataFrame): dataframe with columns:
+                                       - t1: timestamp of the first barrier touch
+                                       - trgt: target that was used to generate the horizontal barriers
+                                       - side (optional): side of bets
+            stepSize (float): ---
+            prob (pd.Series): series with probabilities of given predictions
+            pred (pd.Series): series with predictions
+            numClasses (int): number of classes
+
+        Returns:
+            signal1 (pd.Series): series with discretized signals
+    '''
+    if prob.shape[0] == 0:
+        return pd.Series()
+    signal0 = (prob - 1.0 / numClasses) / (prob * (1.0 - prob)) ** 0.5  # t-value
+    signal0 = pred * (2 * norm.cdf(signal0) - 1)  # signal = side * size
+    if 'side' in events:
+        signal0 *= events.loc[signal0.index, 'side']  # meta-labeling
+    df0 = signal0.to_frame('signal').join(events[['t1']], how='left')
+    df0 = avg_active_signals(df0)
+    signal1 = discrete_signal(signal0=df0, stepSize=stepSize)
+    return signal1
+
+
+def bet_size(x: float, w: float) -> float:
+    '''
+    Returns bet size given price divergence and sigmoid function coefficient.
+
+        Parameters:
+            x (float): difference between forecast price and current price f_i - p_t
+            w (float): coefficient that regulates the width of the sigmoid function
+
+        Returns:
+            (float): bet size
+    '''
+    return x * (w + x ** 2) ** (-0.5)
+
+
+def get_target_pos(w: float, f: float, mP: float, maxPos: float) -> float:
+    '''
+    Calculates target position size associated with forecast f.
+
+        Parameters:
+            w (float): coefficient that regulates the width of the sigmoid function
+            f (float): forecast price
+            mP (float): current market price
+            maxPos (float): maximum absolute position size
+
+        Returns:
+            (float): target position size
+    '''
+    return int(bet_size(w, f - mP) * maxPos)
+
+
+def inv_price(f: float, w: float, m: float) -> float:
+    '''
+    Calculates inverse function of bet size with respect to market price p_t.
+
+        Parameters:
+            f (float): forecast price
+            w (float): coefficient that regulates the width of the sigmoid function
+            m (float): bet size
+
+        Returns:
+            (float): inverse price function
+    '''
+    return f - m * (w / (1 - m ** 2)) ** 0.5
+
+
+def limit_price(tPos: float, pos: float, f: float, w: float, maxPos: float) -> float:
+    '''
+    Calculates breakeven limit price p̄ for the order size q̂_{i,t} − q_t to avoid realizing losses.
+
+        Parameters:
+            tPos (float): target position
+            pos (float): current position
+            f (float): forecast price
+            w (float): coefficient that regulates the width of the sigmoid function
+            maxPos (float): maximum absolute position size
+
+        Returns:
+            lP (float): limit price
+    '''
+    sgn = (1 if tPos >= pos else -1)
+    lP = 0
+    for j in range(abs(pos + sgn), abs(tPos + 1)):
+        lP += inv_price(f, w, j / float(maxPos))
+    lP /= tPos - pos
+    return lP
+
+
+def get_w(x: float, m: float):
+    '''
+    Calibrates sigmoid coefficient by calculating the inverse function of bet size with respect to w.
+
+        Parameters:
+            x (float): difference between forecast price and current price f_i - p_t
+            m (float): bet size
+    '''
+    return x ** 2 * (m ** (-2) - 1)
+
+
+def get_num_conc_bets_by_date(date, signals):
+    '''
+    Derives number of long and short concurrent bets by given date.
+
+        Parameters:
+            date (Timestamp): date of signal
+            signals (pd.DataFrame): dataframe with signals
+
+        Returns:
+            long, short (Tuple[int, int]): number of long and short concurrent bets
+    '''
+    long, short = 0, 0
+    for ind in pd.date_range(start = max(signals.index[0], date - timedelta(days=25)), end=date):
+        if ind <= date and signals.loc[ind]['t1'] >= date:
+            if signals.loc[ind]['signal'] >= 0:
+                long += 1
+            else:
+                short += 1
+    return long, short
 
 # =================================================================================================================
 #      Plot Chart
