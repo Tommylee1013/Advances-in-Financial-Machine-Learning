@@ -348,6 +348,36 @@ def volume_runs_bar(tick, initial_expected_bar_size, initial_buy_prob, initial_b
     bars.set_index('t', inplace=True)
     return bars
 
+class FuturesRollETFTrick:
+    def __init__(self, df):
+        self.data_index = df.index
+        df['pinpoint'] = ~(df['symbol'] == df['symbol'].shift(1))
+        df = df.reset_index()
+        df['Diff_close'] = df['close'].diff()
+        df['Diff_close_open'] = df['close'] - df['open']
+        df['H_part'] = 1/df['open'].shift(-1)
+        self.prev_h = 1
+        self.prev_k = 1
+        _ = zip(df.H_part, df.Diff_close, df.Diff_close_open, df.pinpoint)
+        df['K'] = [self.process_row(x, y, z, w) for x, y, z, w in _]
+        self.data = df['K'].values
+
+    @property
+    def series(self):
+        return pd.Series(self.data, index=self.data_index)
+
+    def process_row(self, h_part, diff_close, diff_open_close, pinpoint):
+        if pinpoint:
+            h = self.prev_k*h_part
+            delta = diff_open_close
+        else:
+            h = self.prev_h
+            delta = diff_close
+        k = self.prev_k + h*delta
+        self.prev_h = h
+        self.prev_k = k
+        return k
+
 def getRunBars(tick, initial_expected_bar_size, initial_buy_prob, initial_buy_volume, initial_sell_volume,
                ticker = 'volume', lambda_bar_size=.1, lambda_buy_prob=.1, lambda_buy_volume=.1, lambda_sell_volume=.1):
     tick = tick.sort_index(ascending=True)
@@ -1796,7 +1826,7 @@ def logUniform(a = 1,b = np.exp(1)) : return logUniform_gen(a = a,b = b,name = '
 #      Hyper Parameter Tuning
 # =================================================================================================================
 
-def avg_active_signals_(signals: pd.DataFrame, molecule: np.ndarray):
+def avgActiveSignals_(signals: pd.DataFrame, molecule: np.ndarray):
     '''
     Auxilary function for averaging signals. At time loc, averages signal among those still active.
     Signal is active if:
@@ -1821,7 +1851,7 @@ def avg_active_signals_(signals: pd.DataFrame, molecule: np.ndarray):
     return out
 
 
-def avg_active_signals(signals: pd.DataFrame):
+def avgActiveSignals(signals: pd.DataFrame):
     '''
     Computes the average signal among those active.
 
@@ -1945,7 +1975,7 @@ def limitPrice(tPos: float, pos: float, f: float, w: float, maxPos: float) -> fl
     sgn = (1 if tPos >= pos else -1)
     lP = 0
     for j in range(abs(pos + sgn), abs(tPos + 1)):
-        lP += inv_price(f, w, j / float(maxPos))
+        lP += invPrice(f, w, j / float(maxPos))
     lP /= tPos - pos
     return lP
 
@@ -1961,7 +1991,7 @@ def getW(x: float, m: float):
     return x ** 2 * (m ** (-2) - 1)
 
 
-def get_num_conc_bets_by_date(date, signals, freq = 'B'):
+def getNumConcBets(date, signals, freq = 'B'):
     '''
     Derives number of long and short concurrent bets by given date.
 
@@ -1980,6 +2010,82 @@ def get_num_conc_bets_by_date(date, signals, freq = 'B'):
             else:
                 short += 1
     return long, short
+
+# =================================================================================================================
+#      Backtest Statistics
+# =================================================================================================================
+
+def getBetsTiming(tPos: pd.Series):
+    df0 = tPos[tPos == 0].index
+    df1 = tPos.shift(1)
+    df1 = df1[df1 != 0].index
+    bets = df0.intersection(df1)  # flattening
+    df0 = tPos.iloc[1:] * tPos.iloc[:-1].values
+    bets = bets.union(df0[df0 < 0].index).sort_values()  # tPos flips
+    if tPos.index[-1] not in bets:
+        bets = bets.append(tPos.index[-1:])  # last bet
+    return bets
+
+
+def getHoldingPeriod(tPos: pd.Series):
+    hp, tEntry = pd.DataFrame(columns=['dT', 'w']), 0.0
+    pDiff, tDiff = tPos.diff(), (tPos.index - tPos.index[0]) / np.timedelta64(1, 'D')
+    for i in range(1, tPos.shape[0]):
+        if pDiff.iloc[i] * tPos.iloc[i - 1] >= 0:  # increased or unchanged
+            if tPos.iloc[i] != 0:
+                tEntry = (tEntry * tPos.iloc[i - 1] + tDiff[i] * pDiff.iloc[i]) / tPos.iloc[i]
+        else:  # decreased
+            if tPos.iloc[i] * tPos.iloc[i - 1] < 0:  # flip
+                hp.loc[tPos.index[i], ['dT', 'w']] = (tDiff[i] - tEntry, abs(tPos.iloc[i - 1]))
+                tEntry = tDiff[i]  # reset entry time
+            else:
+                hp.loc[tPos.index[i], ['dT', 'w']] = (tDiff[i] - tEntry, abs(pDiff.iloc[i]))
+    if hp['w'].sum() > 0:
+        hp = (hp['dT'] * hp['w']).sum() / hp['w'].sum()
+    else:
+        hp = np.nan
+    return hp
+
+
+def getHHI(betRet: pd.Series):
+    '''
+    Derives HHI concentration of returns (see p. 200 for definition). Returns can be divided into positive
+    and negative or you can calculate the concentration of bets across the months.
+
+    Parameters:
+        betRet (pd.Series): series with bets returns
+
+    Returns:
+        hhi (float): concentration
+    '''
+    if betRet.shape[0] <= 2:
+        return np.nan
+    wght = betRet / betRet.sum()
+    hhi = (wght ** 2).sum()
+    hhi = (hhi - betRet.shape[0] ** (-1)) / (1.0 - betRet.shape[0] ** (-1))
+    return hhi
+
+
+def computeDD_TuW(series: pd.Series, dollars: bool = False):
+    '''
+    연계된 DD와 수면하 시간 계열을 계산합니다
+    :param series: 가격 혹은 달러바 샘플링 된 시계열의 pandas.DataFrame형태의 데이터를 넣습니다
+    :param dollars: 특성화된 series의 indicator입니다
+    :return: Draw down, 수면하 시간을 반환합니다
+    '''
+    df0 = series.to_frame('pnl')
+    df0['hwm'] = series.expanding().max()
+    df1 = df0.groupby('hwm').min().reset_index()
+    df1.columns = ['hwm', 'min']
+    df1.index = df0['hwm'].drop_duplicates(keep='first').index  # time of hwm
+    df1 = df1[df1['hwm'] > df1['min']]  # hwm followed by a drawdown
+    if dollars:
+        dd = df1['hwm'] - df1['min']
+    else:
+        dd = 1 - df1['min'] / df1['hwm']
+    tuw = ((df1.index[1:] - df1.index[:-1]) / np.timedelta64(1, 'Y')).values  # in years
+    tuw = pd.Series(tuw, index=df1.index[:-1])
+    return dd, tuw
 
 # =================================================================================================================
 #      Plot Chart
